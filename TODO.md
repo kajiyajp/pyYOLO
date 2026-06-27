@@ -62,3 +62,4 @@
 - [x] アノテーション可視化で座標の正確さを確認
 - [x] PointLock ROADMAPへの提案書作成（Proposal_for_Introducing_YOLO.md）
 - [x] README.md・.gitignore 整備・origin mainへpush
+- [x] Tracking検証（test_tracking.py）：全523フレームでID:1を一貫追跡・信頼度0.88〜0.89
