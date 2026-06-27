@@ -39,6 +39,10 @@
 
 ## 優先度：低（将来）
 
+- [ ] YOLO26n学習済みモデルをONNXエクスポートしてonnxruntimeで推論テスト
+  - NMSフリーのためpostprocess()の簡略化を確認
+  - YOLO11n ONNXと推論時間を比較（test_onnx_inference.pyを流用）
+
 - [ ] PointLockに学習モード（アノテーションUI）を追加
   - PySide6で矩形描画UI（`calib_wizard.py` を参考に）
   - datalogのPNG → アノテーション → YOLO形式保存
@@ -49,6 +53,10 @@
 
 - [ ] Roboflowでのアノテーション作業効率化
   - 10枚手動 → AI自動補完で残りを効率化
+
+- [ ] Keypoint検出の検討（将来）
+  - 黒皮SS400などCVが苦手な素材が増えた時点で検討
+  - Roboflow（Keypoint対応）でアノテーション作業が必要
 
 ---
 
