@@ -1,0 +1,15 @@
+# 学習済みモデル・学習結果
+runs/
+*.pt
+
+# 動画ファイル（容量大）
+*.mp4
+*.mov
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# キャッシュ
+dataset/labels/*.cache

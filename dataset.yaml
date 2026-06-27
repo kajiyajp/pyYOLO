@@ -1,0 +1,10 @@
+# 作成: 2026-06-28
+# 目的: YOLOv11学習用データセット設定ファイル
+
+path: C:/Users/kajiy/Documents/git-personal/pyYOLO/dataset
+train: images/train
+val: images/val
+
+nc: 1
+names:
+  0: l_mark
