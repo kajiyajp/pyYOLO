@@ -376,13 +376,13 @@ class MainWindow(QMainWindow):
             active = (i == idx)
             b.setChecked(active)
             if active:
-                # 蛍光緑のグロー効果
+                # アクティブは枠線なし・テキストのみ蛍光緑グロー
                 glow = QGraphicsDropShadowEffect(b)
-                glow.setBlurRadius(22)
+                glow.setBlurRadius(18)
                 glow.setColor(QColor(57, 255, 20))
                 glow.setOffset(0, 0)
                 b.setGraphicsEffect(glow)
-                b.setStyleSheet("QPushButton{border:2px solid #39ff14; color:#39ff14; font-weight:bold;}")
+                b.setStyleSheet("QPushButton{color:#39ff14; font-weight:bold;}")
             else:
                 b.setGraphicsEffect(None)
                 b.setStyleSheet("")
@@ -395,21 +395,25 @@ class MainWindow(QMainWindow):
             if not new_classes:
                 QMessageBox.warning(self, "警告", "クラスを1つ以上指定してください")
                 return
-            CLASSES[:] = new_classes  # グローバルを更新
-            save_classes(CLASSES)
-            self._rebuild_class_bar()
-            self.set_status(f"クラスを更新しました（{len(CLASSES)}件）")
+            save_classes(new_classes)  # ファイルにのみ保存（再起動後に反映）
+            self.set_status(f"クラスを保存しました（{len(new_classes)}件）。再起動後に有効になります")
+            QMessageBox.information(self, "クラス設定",
+                                    "クラス設定を保存しました。\nアプリを再起動すると反映されます。")
 
     def set_status(self, msg):
         """ステータスバーにメッセージを表示する"""
         self.status_label.setText(msg)
 
     def _on_tab_changed(self, index):
-        """タブ切替時にそのタブ向けの操作ガイドを表示する"""
+        """タブ切替時にガイド表示とクラスボタンの有効/無効を切り替える"""
+        # カメラ撮影中はクラスボタンをグレーアウト（注釈はアノテーションタブでのみ）
+        if hasattr(self, "class_buttons"):
+            for b in self.class_buttons:
+                b.setEnabled(index == 1)
         if index == 0:
             self.set_status("カメラ撮影：カメラ開始 → Spaceで連続撮影 / Ctrl+Cで停止")
         else:
-            self.set_status("アノテーション：撮影フォルダを開く → 矩形描画 → Ctrl+Sで保存 / A:前 D:次")
+            self.set_status("アノテーション：撮影フォルダを開く → 矩形描画 → Sで保存 / A:前 D:次")
 
     def _build_camera_tab(self):
         """タブ①：カメラ撮影パネルを組み立てる"""
@@ -454,7 +458,8 @@ class MainWindow(QMainWindow):
         btn_delete.clicked.connect(self.delete_selected)
         btn_clear = QPushButton("全矩形クリア")
         btn_clear.clicked.connect(self.canvas.clear_boxes)
-        btn_save = QPushButton("YOLO形式で保存（Ctrl+S）")
+        btn_save = QPushButton("保存（S）")
+        btn_save.setFocusPolicy(Qt.NoFocus)
         btn_save.clicked.connect(self.save_label)
 
         self.box_list = QListWidget()
@@ -489,7 +494,7 @@ class MainWindow(QMainWindow):
             self.capture_frame()
         elif key == Qt.Key_C and ctrl:
             self._stop_camera()
-        elif key == Qt.Key_S and ctrl:
+        elif key == Qt.Key_S:
             self.save_label()
         elif key == Qt.Key_A:
             self.navigate(-1)
