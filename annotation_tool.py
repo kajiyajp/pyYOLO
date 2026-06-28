@@ -229,27 +229,29 @@ class MainWindow(QMainWindow):
         container.setLayout(root)
         self.setCentralWidget(container)
 
-        # 画面下部のステータスバー
-        self.statusBar().showMessage("準備完了")
+        # 画面下部のステータスバー（QLabelを埋め込み左端の見切れを防ぐ）
+        self.status_label = QLabel("準備完了")
+        self.status_label.setContentsMargins(8, 0, 8, 0)
+        self.statusBar().addWidget(self.status_label, 1)
         self._on_tab_changed(0)
 
     def set_status(self, msg):
         """ステータスバーにメッセージを表示する"""
-        self.statusBar().showMessage(msg)
+        self.status_label.setText(msg)
 
     def _on_tab_changed(self, index):
         """タブ切替時にそのタブ向けの操作ガイドを表示する"""
         if index == 0:
             self.set_status("カメラ撮影：カメラ開始 → Spaceで連続撮影 / Ctrl+Cで停止")
         else:
-            self.set_status("アノテーション：撮影フォルダを開く → 矩形描画 → Ctrl+Sで保存 / ←→で画像切替")
+            self.set_status("アノテーション：撮影フォルダを開く → 矩形描画 → Ctrl+Sで保存 / A:前 D:次")
 
     def _build_camera_tab(self):
         """タブ①：カメラ撮影パネルを組み立てる"""
         self.cam_index = QSpinBox()
         self.cam_index.setRange(0, 10)
 
-        btn_cam = QPushButton("カメラ開始/停止")
+        btn_cam = QPushButton("カメラ開始/停止（Ctrl+Cで停止）")
         btn_cam.clicked.connect(self.toggle_camera)
         btn_capture = QPushButton("キャプチャ（Space）")
         btn_capture.clicked.connect(self.capture_frame)
@@ -280,9 +282,9 @@ class MainWindow(QMainWindow):
         btn_open_folder.clicked.connect(self.open_folder)
         btn_open_captures = QPushButton("撮影フォルダを開く")
         btn_open_captures.clicked.connect(self.open_capture_folder)
-        btn_prev = QPushButton("← 前の画像")
+        btn_prev = QPushButton("← 前の画像（A）")
         btn_prev.clicked.connect(lambda: self.navigate(-1))
-        btn_next = QPushButton("次の画像 →")
+        btn_next = QPushButton("次の画像（D）→")
         btn_next.clicked.connect(lambda: self.navigate(1))
         btn_delete = QPushButton("選択した矩形を削除")
         btn_delete.clicked.connect(self.delete_selected)
@@ -292,6 +294,7 @@ class MainWindow(QMainWindow):
         btn_save.clicked.connect(self.save_label)
 
         self.box_list = QListWidget()
+        self.box_list.setFocusPolicy(Qt.NoFocus)  # A/Dキーがリストに吸われないように
 
         lay = QVBoxLayout()
         lay.addWidget(QLabel("クラス選択"))
@@ -321,9 +324,9 @@ class MainWindow(QMainWindow):
             self.set_status("カメラを停止しました")
         elif key == Qt.Key_S and ctrl:
             self.save_label()
-        elif key == Qt.Key_Left:
+        elif key == Qt.Key_A:
             self.navigate(-1)
-        elif key == Qt.Key_Right:
+        elif key == Qt.Key_D:
             self.navigate(1)
 
     def open_file(self):
