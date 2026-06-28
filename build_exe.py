@@ -5,9 +5,10 @@
 import PyInstaller.__main__
 
 # 除外する重量級モジュール（アノテーションツールでは未使用）
+# onnxruntime は推論タブで使うため除外しない（onnxは推論には不要なので除外可）
 EXCLUDES = [
     "torch", "torchvision", "ultralytics", "ultralytics_thop",
-    "matplotlib", "scipy", "pandas", "polars", "onnxruntime", "onnx",
+    "matplotlib", "scipy", "pandas", "polars",
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
     "PySide6.Qt3DCore", "PySide6.QtMultimedia", "PySide6.QtCharts",
 ]
