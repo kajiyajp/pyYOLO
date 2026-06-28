@@ -56,39 +56,45 @@ YOLO（onnxruntime + best.onnx）
 
 ```
 pyYOLO/
-├── dataset/               # 学習データ（画像・ラベル）
-│   ├── images/all/        # 全100フレーム
-│   ├── images/train/      # 学習用80枚
-│   ├── images/val/        # 検証用20枚
-│   └── labels/            # YOLOフォーマットラベル
-├── dataset_obb/           # OBB用データセット
-├── samples/               # テスト用出力画像・動画
-│   ├── inference/         # YOLO11n推論結果
-│   ├── obb_result/        # OBB推論結果
-│   ├── onnx_result/       # ONNX推論結果
-│   ├── compare/           # YOLO11n vs YOLO26n比較
-│   └── track_*.jpg        # Tracking確認画像
-├── extract_frames.py      # 動画からフレーム抽出
-├── prepare_dataset.py     # train/val分割
-├── check_annotation.py    # アノテーション可視化
-├── train_obb.py           # OBBモデル学習
-├── train_yolo26.py        # YOLO26n学習
-├── convert_to_obb.py      # ラベルをOBB形式に変換
-├── test_inference.py      # YOLO11n推論テスト
-├── test_tracking.py       # Tracking動作確認
-├── test_obb.py            # OBB推論テスト
-├── test_onnx_inference.py # onnxruntime推論（ultralytics不使用）
-├── export_onnx.py         # ONNXエクスポート
-├── benchmark.py           # YOLO11n vs YOLO26n速度比較
-├── benchmark_onnx.py      # ONNX推論速度比較
-├── compare_yolo11_yolo26.py # COCOモデルの事前比較
-├── dataset.yaml           # YOLO学習設定
-├── dataset_obb.yaml       # OBB学習設定
-├── CLAUDE.md              # Claude Code作業ルール
-├── ROADMAP.md             # 開発ロードマップ（予定）
-├── RESUME.md              # セッション引継ぎメモ（予定）
-├── TODO.md                # 残タスク管理
-└── Proposal_for_Introducing_YOLO.md  # PointLock提案書
+├── README.md                  # このファイル
+├── CLAUDE.md                  # Claude Code作業ルール
+│
+├── annotation_tool.py         # 社内ツール本体（4タブ・撮影〜推論）
+├── onnx_detector.py           # onnxruntime推論（PointLock移植の土台）
+├── train_model.py             # 学習（引数対応・ツールから呼ばれる）
+├── export_model.py            # ONNX変換（引数対応・ツールから呼ばれる）
+├── build_exe.py               # PyInstallerでexe化
+│
+├── docs/                      # 運用・計画ドキュメント
+│   ├── ROADMAP.md             #   開発ロードマップ
+│   ├── RESUME.md              #   セッション引継ぎメモ
+│   ├── STARTUP.md             #   立ち上げの記録
+│   ├── TODO.md                #   残タスク
+│   └── Proposal_for_Introducing_YOLO.md  # PointLock提案書
+│
+├── scripts/                   # 実験・データ準備スクリプト
+│   ├── extract_frames.py      #   動画からフレーム抽出
+│   ├── prepare_dataset.py     #   train/val分割
+│   ├── prepare_real_dataset.py#   実機撮影データの分割
+│   ├── convert_to_obb.py      #   ラベルをOBB形式に変換
+│   ├── check_annotation.py    #   アノテーション可視化
+│   ├── export_onnx.py         #   ONNXエクスポート
+│   ├── train_real.py / train_obb.py / train_yolo26.py  # 各種学習
+│   ├── test_*.py              #   推論/Tracking/OBB/ONNXのテスト
+│   └── benchmark*.py / compare_yolo11_yolo26.py  # 速度・精度比較
+│
+├── configs/                   # データセット設定
+│   ├── dataset.yaml
+│   ├── dataset_obb.yaml
+│   └── dataset_real.yaml
+│
+├── dataset/                   # 初期データ（動画100フレーム＋ラベル）
+└── samples/                   # 実験結果の画像
+    ├── inference/ obb_result/ onnx_result/ compare/ real_result/
+    └── track_*.jpg
+
+※ scripts/ は原則リポルートから実行する（例: python scripts/train_real.py）
+※ runs/ dist/ build/ *.pt *.onnx captures/ datasets/ は .gitignore 対象
 ```
 
 ---
