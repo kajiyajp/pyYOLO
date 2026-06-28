@@ -120,6 +120,7 @@ class Canvas(QWidget):
         self._panning = False        # 中ボタンドラッグでパン中
         self._pan_start = QPoint()   # パン開始時のマウス位置
         self.hover_pt = None         # キーポイントモードのガイド線用カーソル位置
+        self.guide_angle = 0.0       # ガイド十字線の回転角（度）。Q=CCW / R=CW
         self.setMouseTracking(True)  # ボタン無しでもマウス移動を受ける（ガイド線用）
 
     def set_live(self, flag):
@@ -164,6 +165,13 @@ class Canvas(QWidget):
     def set_kpt_mode(self, flag):
         """キーポイント指定モードのON/OFFを切り替えて再描画する"""
         self.kpt_mode = flag
+        self.update()
+
+    def rotate_guide(self, deg):
+        """ガイド十字線を回転する（キーポイントモード時のみ）"""
+        if not self.kpt_mode:
+            return
+        self.guide_angle = (self.guide_angle + deg) % 360.0
         self.update()
 
     def _box_at(self, ix, iy):
@@ -299,15 +307,21 @@ class Canvas(QWidget):
                 painter.drawText(wx1, wy1 - 4, f"{class_name(d['cls'])} {d['conf']:.2f}")
 
         # キーポイントモード中はカーソル位置にガイド十字線を引く（頂点を正確に狙う）
+        # guide_angle で回転できるので、傾いたL字の2辺に重ねて交点を狙える
         if self.kpt_mode and self.hover_pt is not None:
             disp_w, disp_h = w * self._scale, h * self._scale
-            x0, x1f = self._off_x, self._off_x + disp_w
-            y0, y1f = self._off_y, self._off_y + disp_h
+            img_rect = QRect(int(self._off_x), int(self._off_y), int(disp_w), int(disp_h))
             hx, hy = self.hover_pt.x(), self.hover_pt.y()
-            if x0 <= hx <= x1f and y0 <= hy <= y1f:
-                painter.setPen(QPen(QColor(255, 255, 255, 180), 1))
-                painter.drawLine(int(x0), int(hy), int(x1f), int(hy))   # 水平ガイド
-                painter.drawLine(int(hx), int(y0), int(hx), int(y1f))   # 垂直ガイド
+            if img_rect.contains(self.hover_pt):
+                painter.save()
+                painter.setClipRect(img_rect)   # 画像範囲外へはみ出さない
+                length = (self.width() ** 2 + self.height() ** 2) ** 0.5
+                a = np.radians(self.guide_angle)
+                painter.setPen(QPen(QColor(255, 255, 255, 200), 1))
+                for ang in (a, a + np.pi / 2):   # 直交する2本（L字の2辺に対応）
+                    dx, dy = np.cos(ang) * length, np.sin(ang) * length
+                    painter.drawLine(int(hx - dx), int(hy - dy), int(hx + dx), int(hy + dy))
+                painter.restore()
 
         # 単一画面の右上に画像番号をオーバーレイ表示する
         if self.overlay_text and not self.live:
@@ -323,11 +337,14 @@ class Canvas(QWidget):
             painter.setPen(QColor(0, 255, 0))
             painter.drawText(x + pad, y + th - 2, self.overlay_text)
 
-        # キーポイントモード中は左上に小さく表示する（ズーム率も併記）
+        # キーポイントモード中は左上に小さく表示する（ズーム率・ガイド角も併記）
         if self.kpt_mode and self.image is not None:
             painter.setFont(QFont("Meiryo", 11, QFont.Bold))
             painter.setPen(QColor(255, 0, 255))
-            label = "KEYPOINT MODE (K)" + (f"  x{self.zoom:.1f}" if self.zoom > 1.01 else "")
+            label = "KEYPOINT MODE (K)"
+            if self.zoom > 1.01:
+                label += f"  x{self.zoom:.1f}"
+            label += f"  ガイド{self.guide_angle:.0f}° (Q/R)"
             painter.drawText(int(self._off_x) + 8, int(self._off_y) + 22, label)
 
     def _draw_keypoint(self, painter, px, py, cls_id):
@@ -991,6 +1008,10 @@ class MainWindow(QMainWindow):
             self.toggle_view()
         elif key == Qt.Key_K:
             self.toggle_kpt_mode()  # キーポイント指定モードのON/OFF
+        elif key == Qt.Key_Q:
+            self.canvas.rotate_guide(-2)  # ガイド線を反時計回り(CCW)
+        elif key == Qt.Key_R:
+            self.canvas.rotate_guide(2)   # ガイド線を時計回り(CW)
 
     def toggle_kpt_mode(self):
         """キーポイント指定モード（L字頂点を矩形内に1点クリック）のON/OFFを切り替える"""
