@@ -11,18 +11,20 @@
 ## 直近でやったこと
 
 - CLAUDE.md / README.md / ROADMAP.md / RESUME.md を整備
-- `feature/annotation-tool` ブランチで社内アノテーションツールの開発を開始
-- `annotation_tool.py` を作成（PySide6 + UVC + YOLO形式保存）
+- `annotation_tool.py` を作成（PySide6 + UVC + YOLO形式保存）→ mainにマージ済み
+- `build_exe.py` でPyInstaller exe化（社内配布用・約246MB）
+  - exe単体起動を確認済み（dist/pyYOLO-Annotator/pyYOLO-Annotator.exe）
 
 ---
 
 ## 次にやること
 
-1. `annotation_tool.py` の動作確認
-   - UVCカメラ（ノートPC）でライブ映像が表示されるか
+1. `annotation_tool.py` の実機動作確認（ノートPC）
+   - UVCカメラでライブ映像が表示されるか
    - 矩形描画 → クラス選択 → 保存 が正しく動くか
-   - 保存した .txt が YOLOフォーマットになっているか（`check_annotation.py` で検証）
-2. 動作OKなら `feature/annotation-tool` を `main` にマージ
+   - 保存した .txt を `check_annotation.py` で検証
+2. exeを社内ノートPCに配布してテスト
+   - `python build_exe.py` でビルド → dist/ フォルダをzip化して配布
 3. Phase 2（ONNX推論のリアルタイム可視化）に着手
 
 ---

@@ -6,6 +6,11 @@ runs/
 # アノテーションツールのキャプチャ画像
 captures/
 
+# PyInstallerビルド成果物
+build/
+dist/
+*.spec
+
 # 動画ファイル（容量大）
 *.mp4
 *.mov
