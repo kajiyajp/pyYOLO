@@ -104,15 +104,23 @@ class Canvas(QWidget):
         self.drawing = False         # ドラッグ中フラグ
         self.start_pt = QPoint()     # ドラッグ開始点（ウィジェット座標）
         self.cur_pt = QPoint()       # ドラッグ中の現在点（ウィジェット座標）
-        self._scale = 1.0            # 表示倍率
-        self._off_x = 0              # 表示時の左オフセット
-        self._off_y = 0              # 表示時の上オフセット
+        self._scale = 1.0            # 表示倍率（fit倍率×ズーム）
+        self._off_x = 0.0            # 表示時の左オフセット（float）
+        self._off_y = 0.0            # 表示時の上オフセット（float）
         self.live = False            # カメラ起動中フラグ（緑グロー枠の表示用）
         self.overlay_text = ""       # 画像右上に出す番号オーバーレイ（例 "13/20"）
         self.detections = []         # 推論結果の表示用 [dict(x1,y1,x2,y2,conf,cls)]
         # --- キーポイントモード（YOLO Pose用：L字頂点を矩形ごとに1点指定）---
         self.kpt_mode = False        # キーポイント指定モードON/OFF（Kキーで切替）
         self.keypoints = []          # boxesと並走。各要素は (px, py) 元画像px座標 or None（未指定）
+        # --- ズーム/パン（マウススクロールで拡大・精密な頂点指定用）---
+        self.zoom = 1.0              # 拡大率（1.0=全体表示〜12.0）
+        self._pan_x = 0.0            # ズーム時の追加オフセットX（パン）
+        self._pan_y = 0.0            # ズーム時の追加オフセットY（パン）
+        self._panning = False        # 中ボタンドラッグでパン中
+        self._pan_start = QPoint()   # パン開始時のマウス位置
+        self.hover_pt = None         # キーポイントモードのガイド線用カーソル位置
+        self.setMouseTracking(True)  # ボタン無しでもマウス移動を受ける（ガイド線用）
 
     def set_live(self, flag):
         """カメラ起動中フラグを切り替えて再描画する"""
@@ -125,7 +133,15 @@ class Canvas(QWidget):
         self.boxes = []
         self.keypoints = []          # キーポイントも初期化
         self.detections = []
+        self.reset_view()            # ズーム/パンを初期化
         self.update()
+
+    def reset_view(self):
+        """ズーム・パンを初期状態（全体表示）に戻す"""
+        self.zoom = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
+        self.hover_pt = None
 
     def set_class(self, cls_id):
         """描画対象のクラスIDを切り替える"""
@@ -160,15 +176,67 @@ class Canvas(QWidget):
                     best, best_area = i, area
         return best
 
+    def _fit_scale(self):
+        """画像をウィジェットに収めるfit倍率（ズーム1.0時の倍率）"""
+        h, w = self.image.shape[:2]
+        return min(self.width() / w, self.height() / h)
+
     def _calc_transform(self):
-        """画像をウィジェットに収める倍率とオフセットを計算する"""
+        """fit倍率×ズーム＋パンから表示倍率とオフセットを計算する"""
         if self.image is None:
             return
         h, w = self.image.shape[:2]
-        self._scale = min(self.width() / w, self.height() / h)
-        disp_w, disp_h = int(w * self._scale), int(h * self._scale)
-        self._off_x = (self.width() - disp_w) // 2
-        self._off_y = (self.height() - disp_h) // 2
+        self._scale = self._fit_scale() * self.zoom
+        disp_w, disp_h = w * self._scale, h * self._scale
+        self._off_x = (self.width() - disp_w) / 2 + self._pan_x
+        self._off_y = (self.height() - disp_h) / 2 + self._pan_y
+
+    def _clamp_pan(self):
+        """拡大時に画像が枠から離れすぎないようパンを制限する"""
+        if self.image is None:
+            return
+        h, w = self.image.shape[:2]
+        scale = self._fit_scale() * self.zoom
+        disp_w, disp_h = w * scale, h * scale
+        base_x = (self.width() - disp_w) / 2
+        base_y = (self.height() - disp_h) / 2
+        # 画像が枠より大きい軸はオフセットを [枠-表示, 0] に収める。小さい軸は中央固定
+        if disp_w >= self.width():
+            self._pan_x = min(max(self._pan_x, (self.width() - disp_w) - base_x), -base_x)
+        else:
+            self._pan_x = 0.0
+        if disp_h >= self.height():
+            self._pan_y = min(max(self._pan_y, (self.height() - disp_h) - base_y), -base_y)
+        else:
+            self._pan_y = 0.0
+
+    def _img_to_widget(self, ix, iy):
+        """元画像座標をウィジェット座標(int)に変換する"""
+        return int(ix * self._scale + self._off_x), int(iy * self._scale + self._off_y)
+
+    def wheelEvent(self, event):
+        """マウスホイールでカーソル位置を中心に拡大/縮小する"""
+        if self.image is None:
+            return
+        self._calc_transform()
+        cx, cy = event.position().x(), event.position().y()
+        # ズーム前のカーソル直下の元画像座標
+        ix = (cx - self._off_x) / self._scale
+        iy = (cy - self._off_y) / self._scale
+        factor = 1.25 if event.angleDelta().y() > 0 else 0.8
+        new_zoom = max(1.0, min(12.0, self.zoom * factor))
+        if new_zoom == self.zoom:
+            return
+        self.zoom = new_zoom
+        h, w = self.image.shape[:2]
+        new_scale = self._fit_scale() * self.zoom
+        # カーソル直下の点が同じ位置に留まるようパンを決める
+        self._pan_x = cx - ix * new_scale - (self.width() - w * new_scale) / 2
+        self._pan_y = cy - iy * new_scale - (self.height() - h * new_scale) / 2
+        if self.zoom == 1.0:
+            self._pan_x = self._pan_y = 0.0
+        self._clamp_pan()
+        self.update()
 
     def _widget_to_image(self, pt):
         """ウィジェット座標を元画像ピクセル座標に変換する"""
@@ -193,7 +261,7 @@ class Canvas(QWidget):
         rgb = cv2.cvtColor(self.image, cv2.COLOR_BGR2RGB)
         h, w = rgb.shape[:2]
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888)
-        target = QRect(self._off_x, self._off_y, int(w * self._scale), int(h * self._scale))
+        target = QRect(int(self._off_x), int(self._off_y), int(w * self._scale), int(h * self._scale))
         painter.drawImage(target, qimg)
 
         # 保存済み矩形を描画
@@ -224,13 +292,22 @@ class Canvas(QWidget):
         if self.detections:
             painter.setFont(QFont("Meiryo", 10, QFont.Bold))
             for d in self.detections:
-                wx1 = int(d["x1"] * self._scale) + self._off_x
-                wy1 = int(d["y1"] * self._scale) + self._off_y
-                wx2 = int(d["x2"] * self._scale) + self._off_x
-                wy2 = int(d["y2"] * self._scale) + self._off_y
+                wx1, wy1 = self._img_to_widget(d["x1"], d["y1"])
+                wx2, wy2 = self._img_to_widget(d["x2"], d["y2"])
                 painter.setPen(QPen(QColor(255, 230, 0), 2))
                 painter.drawRect(QRect(QPoint(wx1, wy1), QPoint(wx2, wy2)))
                 painter.drawText(wx1, wy1 - 4, f"{class_name(d['cls'])} {d['conf']:.2f}")
+
+        # キーポイントモード中はカーソル位置にガイド十字線を引く（頂点を正確に狙う）
+        if self.kpt_mode and self.hover_pt is not None:
+            disp_w, disp_h = w * self._scale, h * self._scale
+            x0, x1f = self._off_x, self._off_x + disp_w
+            y0, y1f = self._off_y, self._off_y + disp_h
+            hx, hy = self.hover_pt.x(), self.hover_pt.y()
+            if x0 <= hx <= x1f and y0 <= hy <= y1f:
+                painter.setPen(QPen(QColor(255, 255, 255, 180), 1))
+                painter.drawLine(int(x0), int(hy), int(x1f), int(hy))   # 水平ガイド
+                painter.drawLine(int(hx), int(y0), int(hx), int(y1f))   # 垂直ガイド
 
         # 単一画面の右上に画像番号をオーバーレイ表示する
         if self.overlay_text and not self.live:
@@ -239,23 +316,23 @@ class Canvas(QWidget):
             tw = fm.horizontalAdvance(self.overlay_text)
             th = fm.height()
             pad = 6
-            disp_w = int(self.image.shape[1] * self._scale)
-            x = self._off_x + disp_w - tw - pad * 2 - 8
-            y = self._off_y + 8
+            disp_w = self.image.shape[1] * self._scale
+            x = int(self._off_x + disp_w - tw - pad * 2 - 8)
+            y = int(self._off_y + 8)
             painter.fillRect(x, y, tw + pad * 2, th + pad, QColor(0, 0, 0, 160))
             painter.setPen(QColor(0, 255, 0))
             painter.drawText(x + pad, y + th - 2, self.overlay_text)
 
-        # キーポイントモード中は左上に小さく表示する
+        # キーポイントモード中は左上に小さく表示する（ズーム率も併記）
         if self.kpt_mode and self.image is not None:
             painter.setFont(QFont("Meiryo", 11, QFont.Bold))
             painter.setPen(QColor(255, 0, 255))
-            painter.drawText(self._off_x + 8, self._off_y + 22, "KEYPOINT MODE (K)")
+            label = "KEYPOINT MODE (K)" + (f"  x{self.zoom:.1f}" if self.zoom > 1.01 else "")
+            painter.drawText(int(self._off_x) + 8, int(self._off_y) + 22, label)
 
     def _draw_keypoint(self, painter, px, py, cls_id):
         """キーポイント（頂点）を小さな十字＋中心点で描画する"""
-        wx = int(px * self._scale) + self._off_x
-        wy = int(py * self._scale) + self._off_y
+        wx, wy = self._img_to_widget(px, py)
         r = 7  # 十字の腕の長さ（ウィジェットpx）
         # 視認性のため白の縁取り→マゼンタ本体の二重描き
         for color, width in [(QColor(255, 255, 255), 4), (QColor(255, 0, 255), 2)]:
@@ -266,10 +343,8 @@ class Canvas(QWidget):
     def _draw_box(self, painter, cls_id, x1, y1, x2, y2):
         """1つの矩形とクラス名ラベルを描画する"""
         color = class_color(cls_id)
-        wx1 = int(x1 * self._scale) + self._off_x
-        wy1 = int(y1 * self._scale) + self._off_y
-        wx2 = int(x2 * self._scale) + self._off_x
-        wy2 = int(y2 * self._scale) + self._off_y
+        wx1, wy1 = self._img_to_widget(x1, y1)
+        wx2, wy2 = self._img_to_widget(x2, y2)
         painter.setPen(QPen(color, 2))
         painter.drawRect(QRect(QPoint(wx1, wy1), QPoint(wx2, wy2)))
         painter.setFont(QFont("Meiryo", 9))
@@ -277,7 +352,14 @@ class Canvas(QWidget):
 
     def mousePressEvent(self, event):
         """ドラッグ開始：矩形の始点を記録する（キーポイントモードでは頂点を1点指定）"""
-        if self.image is None or event.button() != Qt.LeftButton:
+        if self.image is None:
+            return
+        # 中ボタンドラッグでパン（拡大時の移動）
+        if event.button() == Qt.MiddleButton:
+            self._panning = True
+            self._pan_start = event.position().toPoint()
+            return
+        if event.button() != Qt.LeftButton:
             return
         # キーポイントモード：クリック点を含む矩形を探し、その頂点を登録する
         if self.kpt_mode:
@@ -302,13 +384,28 @@ class Canvas(QWidget):
         self.cur_pt = self.start_pt
 
     def mouseMoveEvent(self, event):
-        """ドラッグ中：現在点を更新して再描画する"""
-        if self.drawing:
-            self.cur_pt = event.position().toPoint()
+        """ドラッグ中の矩形更新／パン／ガイド線用のカーソル追従"""
+        pos = event.position().toPoint()
+        self.hover_pt = pos          # ガイド線用に常に保持
+        if self._panning:
+            # 中ボタンドラッグ量だけパンを動かす
+            self._pan_x += pos.x() - self._pan_start.x()
+            self._pan_y += pos.y() - self._pan_start.y()
+            self._pan_start = pos
+            self._clamp_pan()
             self.update()
+            return
+        if self.drawing:
+            self.cur_pt = pos
+            self.update()
+        elif self.kpt_mode:
+            self.update()            # キーポイントモードはガイド線を毎フレーム再描画
 
     def mouseReleaseEvent(self, event):
         """ドラッグ終了：矩形を確定して保存する"""
+        if event.button() == Qt.MiddleButton and self._panning:
+            self._panning = False
+            return
         if not self.drawing:
             return
         self.drawing = False
@@ -830,6 +927,7 @@ class MainWindow(QMainWindow):
             return
         self.detector.conf = self.conf_spin.value() / 100.0
         self.canvas.overlay_text = ""
+        self.canvas.reset_view()
         self.canvas.set_live(True)
         self.view_stack.setCurrentIndex(0)
         self.infer_timer.start(50)  # 約20fps（推論は重いので控えめ）
@@ -1064,6 +1162,7 @@ class MainWindow(QMainWindow):
             return
         self.timer.start(30)  # 約33fpsで更新
         self.canvas.overlay_text = ""  # ライブ中は番号を消す
+        self.canvas.reset_view()       # ライブはズーム解除
         self.canvas.set_live(True)  # 緑グロー枠ON
         self.set_status(f"カメラ {idx} 起動中：Spaceで撮影 / Ctrl+Cで停止")
 
