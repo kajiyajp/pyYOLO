@@ -8,7 +8,7 @@ import glob
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, QRect, QPoint
+from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize
 from PySide6.QtGui import QImage, QPainter, QPen, QColor, QFont, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QComboBox,
@@ -64,6 +64,7 @@ class Canvas(QWidget):
         self._off_x = 0              # 表示時の左オフセット
         self._off_y = 0              # 表示時の上オフセット
         self.live = False            # カメラ起動中フラグ（緑グロー枠の表示用）
+        self.overlay_text = ""       # 画像右上に出す番号オーバーレイ（例 "13/20"）
 
     def set_live(self, flag):
         """カメラ起動中フラグを切り替えて再描画する"""
@@ -143,6 +144,20 @@ class Canvas(QWidget):
                 painter.setPen(QPen(QColor(0, 255, 0, alpha), width))
                 m = width // 2
                 painter.drawRect(self.rect().adjusted(m, m, -m, -m))
+
+        # 単一画面の右上に画像番号をオーバーレイ表示する
+        if self.overlay_text and not self.live:
+            painter.setFont(QFont("Meiryo", 14, QFont.Bold))
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(self.overlay_text)
+            th = fm.height()
+            pad = 6
+            disp_w = int(self.image.shape[1] * self._scale)
+            x = self._off_x + disp_w - tw - pad * 2 - 8
+            y = self._off_y + 8
+            painter.fillRect(x, y, tw + pad * 2, th + pad, QColor(0, 0, 0, 160))
+            painter.setPen(QColor(0, 255, 0))
+            painter.drawText(x + pad, y + th - 2, self.overlay_text)
 
     def _draw_box(self, painter, cls_id, x1, y1, x2, y2):
         """1つの矩形とクラス名ラベルを描画する"""
@@ -224,10 +239,10 @@ class MainWindow(QMainWindow):
         # 右側：単一画面（canvas）と複数画面（gallery）をスタックで切替える
         self.gallery = QListWidget()
         self.gallery.setViewMode(QListView.IconMode)
-        self.gallery.setIconSize(self.gallery.iconSize().scaled(160, 120, Qt.KeepAspectRatio))
+        self.gallery.setIconSize(QSize(260, 195))  # サムネイルを大きめに
         self.gallery.setResizeMode(QListView.Adjust)
         self.gallery.setMovement(QListView.Static)
-        self.gallery.setSpacing(8)
+        self.gallery.setSpacing(10)
         self.gallery.itemClicked.connect(self._on_gallery_click)
 
         self.view_stack = QStackedWidget()
@@ -392,16 +407,41 @@ class MainWindow(QMainWindow):
             self.set_status("単一画面：矩形描画 → Ctrl+Sで保存 / A:前 D:次 W:表示切替")
 
     def _populate_gallery(self):
-        """読込中の画像をサムネイルとして一覧に並べる"""
+        """読込中の画像をサムネイルとして一覧に並べる（アノテーション枠付き）"""
         self.gallery.clear()
         for i, path in enumerate(self.image_files):
-            pix = QPixmap(path)
-            if pix.isNull():
+            pix, annotated = self._make_thumbnail(path)
+            if pix is None:
                 continue
-            icon = QIcon(pix.scaled(160, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            item = QListWidgetItem(icon, os.path.basename(path))
+            mark = " ✓済" if annotated else " －未"
+            item = QListWidgetItem(QIcon(pix), os.path.basename(path) + mark)
             item.setData(Qt.UserRole, i)
             self.gallery.addItem(item)
+
+    def _make_thumbnail(self, path):
+        """画像にアノテーション枠を描いたサムネイル(QPixmap)と注釈有無を返す"""
+        img = cv2.imread(path)
+        if img is None:
+            return None, False
+        h, w = img.shape[:2]
+        label_path = os.path.splitext(path)[0] + ".txt"
+        annotated = os.path.exists(label_path) and os.path.getsize(label_path) > 0
+        if os.path.exists(label_path):
+            with open(label_path) as f:
+                for line in f:
+                    p = line.split()
+                    if len(p) != 5:
+                        continue
+                    cls = int(p[0])
+                    cx, cy, bw, bh = map(float, p[1:])
+                    x1, y1 = int((cx - bw / 2) * w), int((cy - bh / 2) * h)
+                    x2, y2 = int((cx + bw / 2) * w), int((cy + bh / 2) * h)
+                    c = CLASS_COLORS[cls]
+                    cv2.rectangle(img, (x1, y1), (x2, y2), (c.blue(), c.green(), c.red()), 4)
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+        pix = QPixmap.fromImage(qimg).scaled(260, 195, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        return pix, annotated
 
     def _on_gallery_click(self, item):
         """サムネイルをクリックしたらその画像を単一画面で開く"""
@@ -418,6 +458,7 @@ class MainWindow(QMainWindow):
             return
         self.cur_path = path
         self.canvas.set_image(img)
+        self.canvas.overlay_text = f"{self.cur_index + 1}/{len(self.image_files)}"  # 右上番号
         self._load_existing_label(path, img.shape[1], img.shape[0])
         self.refresh_list()
         self.set_status(f"{os.path.basename(path)}  ({self.cur_index + 1}/{len(self.image_files)})  A:前 D:次 W:表示切替")
@@ -458,6 +499,7 @@ class MainWindow(QMainWindow):
             self.cap = None
             return
         self.timer.start(30)  # 約33fpsで更新
+        self.canvas.overlay_text = ""  # ライブ中は番号を消す
         self.canvas.set_live(True)  # 緑グロー枠ON
         self.set_status(f"カメラ {idx} 起動中：Spaceで撮影 / Ctrl+Cで停止")
 
