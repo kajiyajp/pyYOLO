@@ -10,14 +10,14 @@ import json
 import cv2
 import numpy as np
 from onnx_detector import OnnxDetector
-from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize
+from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize, QProcess
 from PySide6.QtGui import QImage, QPainter, QPen, QColor, QFont, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFileDialog, QHBoxLayout, QVBoxLayout,
     QSpinBox, QMessageBox, QTabWidget, QStackedWidget, QListView,
     QButtonGroup, QGraphicsDropShadowEffect, QDialog, QPlainTextEdit,
-    QDialogButtonBox,
+    QDialogButtonBox, QLineEdit,
 )
 
 # キャプチャ画像の保存先（exe/スクリプトと同じ場所。書き込み不可なら一時フォルダ）
@@ -302,6 +302,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_camera_tab(), "カメラ撮影")
         self.tabs.addTab(self._build_annotation_tab(), "アノテーション")
+        self.tabs.addTab(self._build_train_tab(), "学習・変換")
         self.tabs.addTab(self._build_inference_tab(), "推論")
         self.tabs.currentChanged.connect(self._on_tab_changed)  # タブ切替で案内を更新
 
@@ -429,12 +430,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, "class_buttons"):
             for b in self.class_buttons:
                 b.setEnabled(index == 1)
-        if index == 0:
-            self.set_status("カメラ撮影：カメラ開始 → Spaceで連続撮影 / Ctrl+Cで停止")
-        elif index == 1:
-            self.set_status("アノテーション：撮影フォルダを開く → 矩形描画 → Sで保存 / A:前 D:次")
-        else:
-            self.set_status("推論：モデル(.onnx)読込 → カメラで推論 or 表示中画像で推論")
+        guides = {
+            0: "カメラ撮影：カメラ開始 → Spaceで連続撮影 / Ctrl+Cで停止",
+            1: "アノテーション：撮影フォルダを開く → 矩形描画 → Sで保存 / A:前 D:次",
+            2: "学習・変換：撮影フォルダ→データセット作成→学習→ONNX変換（開発環境のみ）",
+            3: "推論：モデル(.onnx)読込 → カメラで推論 or 表示中画像で推論",
+        }
+        self.set_status(guides.get(index, ""))
 
     def _build_camera_tab(self):
         """タブ①：カメラ撮影パネルを組み立てる"""
@@ -503,8 +505,152 @@ class MainWindow(QMainWindow):
         w.setLayout(lay)
         return w
 
+    def _build_train_tab(self):
+        """タブ③：学習・ONNX変換パネル（開発環境=python実行時のみ動作）"""
+        self.model_name_edit = QLineEdit("marks")
+        self.train_src_label = QLabel(CAPTURE_DIR)
+        self.train_src_label.setWordWrap(True)
+        self.train_src = CAPTURE_DIR
+
+        btn_src = QPushButton("撮影フォルダを選択")
+        btn_src.clicked.connect(self._choose_train_src)
+        btn_make = QPushButton("① データセット作成")
+        btn_make.clicked.connect(self.make_dataset)
+        btn_train = QPushButton("② 学習開始（best.pt作成）")
+        btn_train.clicked.connect(self.start_training)
+        btn_export = QPushButton("③ ONNX変換（best.pt→onnx）")
+        btn_export.clicked.connect(self.start_export)
+
+        self.train_log = QPlainTextEdit()
+        self.train_log.setReadOnly(True)
+        self.train_log.setMaximumBlockCount(500)
+
+        self.train_buttons = [btn_make, btn_train, btn_export]
+        lay = QVBoxLayout()
+        lay.addWidget(QLabel("モデル名（フォルダ名になります）"))
+        lay.addWidget(self.model_name_edit)
+        lay.addWidget(QLabel("学習元の撮影フォルダ"))
+        lay.addWidget(self.train_src_label)
+        lay.addWidget(btn_src)
+        lay.addWidget(btn_make)
+        lay.addWidget(btn_train)
+        lay.addWidget(btn_export)
+        lay.addWidget(QLabel("ログ"))
+        lay.addWidget(self.train_log)
+
+        # 配布exe（frozen）ではultralytics非同梱のため学習・変換は不可
+        if getattr(sys, "frozen", False):
+            for b in (btn_train, btn_export):
+                b.setEnabled(False)
+            note = QLabel("※ 学習・変換は開発環境（python実行）でのみ可能です")
+            note.setStyleSheet("color:#ff8080;")
+            note.setWordWrap(True)
+            lay.addWidget(note)
+
+        w = QWidget()
+        w.setLayout(lay)
+        return w
+
+    def _choose_train_src(self):
+        """学習元の撮影フォルダを選ぶ"""
+        folder = QFileDialog.getExistingDirectory(self, "撮影フォルダを選択", CAPTURE_DIR)
+        if folder:
+            self.train_src = folder
+            self.train_src_label.setText(folder)
+
+    def _train_log(self, text):
+        """学習ログ欄に追記する"""
+        self.train_log.appendPlainText(text.rstrip())
+
+    def make_dataset(self):
+        """撮影フォルダの注釈済み画像をtrain/valに分割しdatasets/<名前>を作る"""
+        import random
+        name = self.model_name_edit.text().strip() or "model"
+        base = _base_dir()
+        dst = os.path.join(base, "datasets", name)
+        # 注釈済み画像を集める
+        pairs = []
+        for jpg in sorted(glob.glob(os.path.join(self.train_src, "*.jpg"))):
+            txt = os.path.splitext(jpg)[0] + ".txt"
+            if os.path.exists(txt) and os.path.getsize(txt) > 0:
+                pairs.append((jpg, txt))
+        if not pairs:
+            QMessageBox.warning(self, "警告", "注釈済み画像が見つかりません")
+            return
+        random.seed(42)
+        random.shuffle(pairs)
+        split = max(1, int(len(pairs) * 0.8))
+        for s in ("train", "val"):
+            os.makedirs(os.path.join(dst, "images", s), exist_ok=True)
+            os.makedirs(os.path.join(dst, "labels", s), exist_ok=True)
+        import shutil
+        for i, (jpg, txt) in enumerate(pairs):
+            s = "train" if i < split else "val"
+            bn = os.path.splitext(os.path.basename(jpg))[0]
+            shutil.copy(jpg, os.path.join(dst, "images", s, bn + ".jpg"))
+            shutil.copy(txt, os.path.join(dst, "labels", s, bn + ".txt"))
+        # data.yamlを書き出す（クラスは現在のCLASSES）
+        yaml_path = os.path.join(base, "datasets", f"{name}.yaml")
+        with open(yaml_path, "w", encoding="utf-8") as f:
+            f.write(f"path: {dst}\n")
+            f.write("train: images/train\nval: images/val\n")
+            f.write(f"nc: {len(CLASSES)}\nnames:\n")
+            for i, c in enumerate(CLASSES):
+                f.write(f"  {i}: {c}\n")
+        self.train_yaml = yaml_path
+        self._train_log(f"データセット作成: {dst}（train {split} / val {len(pairs)-split}）")
+        self._train_log(f"yaml: {yaml_path}")
+        self.set_status(f"データセット作成完了: {name}")
+
+    def start_training(self):
+        """データセットでYOLO学習を開始する（別プロセス）"""
+        if getattr(sys, "frozen", False):
+            return
+        name = self.model_name_edit.text().strip() or "model"
+        yaml_path = getattr(self, "train_yaml", os.path.join(_base_dir(), "datasets", f"{name}.yaml"))
+        if not os.path.exists(yaml_path):
+            QMessageBox.warning(self, "警告", "先に①データセット作成を実行してください")
+            return
+        self._train_log("=== 学習開始（数分かかります）===")
+        self._run_process(["train_model.py", yaml_path, name])
+
+    def start_export(self):
+        """学習済みbest.ptをONNXに変換する（別プロセス）"""
+        if getattr(sys, "frozen", False):
+            return
+        pt, _ = QFileDialog.getOpenFileName(self, "best.ptを選択",
+                                            os.path.join(_base_dir(), "runs"), "PyTorch (*.pt)")
+        if not pt:
+            return
+        name = self.model_name_edit.text().strip() or "model"
+        out = os.path.join(_base_dir(), f"{name}.onnx")
+        self._train_log("=== ONNX変換開始 ===")
+        self._run_process(["export_model.py", pt, out])
+
+    def _run_process(self, args):
+        """pythonスクリプトを別プロセスで実行しログを流す"""
+        if getattr(self, "_proc", None) is not None and self._proc.state() != QProcess.NotRunning:
+            QMessageBox.information(self, "情報", "処理が実行中です。完了までお待ちください")
+            return
+        for b in self.train_buttons:
+            b.setEnabled(False)
+        self._proc = QProcess(self)
+        self._proc.setWorkingDirectory(_base_dir())
+        self._proc.setProcessChannelMode(QProcess.MergedChannels)
+        self._proc.readyReadStandardOutput.connect(
+            lambda: self._train_log(bytes(self._proc.readAllStandardOutput()).decode("utf-8", "ignore")))
+        self._proc.finished.connect(self._on_proc_finished)
+        self._proc.start(sys.executable, args)
+
+    def _on_proc_finished(self):
+        """別プロセス完了時にボタンを戻す"""
+        for b in self.train_buttons:
+            b.setEnabled(True)
+        self._train_log("=== 完了 ===")
+        self.set_status("処理が完了しました")
+
     def _build_inference_tab(self):
-        """タブ③：ONNX推論パネルを組み立てる（onnxruntime・ultralytics不使用）"""
+        """タブ④：ONNX推論パネルを組み立てる（onnxruntime・ultralytics不使用）"""
         self.model_label = QLabel("モデル未読込")
         self.model_label.setWordWrap(True)
 

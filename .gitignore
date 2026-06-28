@@ -31,3 +31,7 @@ dataset_obb/
 
 # 実機撮影の派生データセット（prepare_real_dataset.pyで再生成可）
 dataset_real/
+
+# 学習・変換タブが作るモデル別データセット
+datasets/
+*.onnx
