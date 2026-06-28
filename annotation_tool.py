@@ -233,7 +233,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.cam_index)
         lay.addWidget(btn_cam)
         lay.addWidget(btn_capture)
-        lay.addWidget(QLabel("※ キャプチャすると\n   アノテーションタブに切替わります"))
+        lay.addWidget(QLabel("※ カメラは止まりません。\n   Spaceで連続撮影できます。\n   撮影後はアノテーションタブの\n   「撮影フォルダを開く」へ"))
         lay.addStretch(1)
         w = QWidget()
         w.setLayout(lay)
@@ -249,6 +249,8 @@ class MainWindow(QMainWindow):
         btn_open_file.clicked.connect(self.open_file)
         btn_open_folder = QPushButton("フォルダを開く")
         btn_open_folder.clicked.connect(self.open_folder)
+        btn_open_captures = QPushButton("撮影フォルダを開く")
+        btn_open_captures.clicked.connect(self.open_capture_folder)
         btn_prev = QPushButton("← 前の画像")
         btn_prev.clicked.connect(lambda: self.navigate(-1))
         btn_next = QPushButton("次の画像 →")
@@ -267,6 +269,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.class_combo)
         lay.addWidget(btn_open_file)
         lay.addWidget(btn_open_folder)
+        lay.addWidget(btn_open_captures)
         lay.addWidget(btn_prev)
         lay.addWidget(btn_next)
         lay.addWidget(QLabel("アノテーション一覧"))
@@ -383,27 +386,30 @@ class MainWindow(QMainWindow):
             self.canvas.update()
 
     def capture_frame(self):
-        """ライブ映像の現フレームを静止画として確定する"""
+        """ライブ映像の現フレームを保存する（カメラは止めず連続撮影できる）"""
         if self.cap is None or self.canvas.image is None:
             return
         frozen = self.canvas.image.copy()
-        self._stop_camera()
-        self.canvas.set_image(frozen)
-        self.refresh_list()
-        self.tabs.setCurrentIndex(1)  # 保存可否に関わらず先にアノテーションタブへ切替える
-
-        # 連番ファイル名で一時保存する（保存失敗してもUIは止めない）
+        # カメラもタブも維持。撮影フォルダに連番で保存するだけ
         try:
             os.makedirs(CAPTURE_DIR, exist_ok=True)
             n = len(glob.glob(os.path.join(CAPTURE_DIR, "cap_*.jpg")))
-            self.cur_path = os.path.join(CAPTURE_DIR, f"cap_{n:03d}.jpg")
-            cv2.imwrite(self.cur_path, frozen)
-            self.image_files = [self.cur_path]
-            self.cur_index = 0
-            self.status.setText(f"キャプチャ保存: {self.cur_path}")
+            path = os.path.join(CAPTURE_DIR, f"cap_{n:03d}.jpg")
+            cv2.imwrite(path, frozen)
+            self.status.setText(f"撮影 {n + 1} 枚目を保存: {path}")
         except Exception as e:
-            self.cur_path = None
-            self.status.setText(f"キャプチャ表示OK・保存失敗: {e}")
+            self.status.setText(f"保存失敗: {e}")
+
+    def open_capture_folder(self):
+        """撮影フォルダ(captures)を開いてアノテーション対象にする"""
+        files = sorted(glob.glob(os.path.join(CAPTURE_DIR, "cap_*.jpg")))
+        if not files:
+            QMessageBox.information(self, "情報", "撮影画像がありません。カメラ撮影タブで撮影してください")
+            return
+        self._stop_camera()
+        self.image_files = files
+        self.cur_index = 0
+        self._load_image(files[0])
 
     def refresh_list(self):
         """アノテーション一覧の表示を最新化する"""
