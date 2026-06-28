@@ -16,6 +16,27 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
+# キャプチャ画像の保存先（exe/スクリプトと同じ場所。書き込み不可なら一時フォルダ）
+def _capture_dir():
+    """書き込み可能なキャプチャ保存先を決める"""
+    base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.join(base, "captures")
+    try:
+        os.makedirs(candidate, exist_ok=True)
+        test = os.path.join(candidate, ".write_test")
+        with open(test, "w") as f:
+            f.write("ok")
+        os.remove(test)
+        return candidate
+    except Exception:
+        # 書き込み不可ならユーザーのTempフォルダにフォールバック
+        import tempfile
+        fallback = os.path.join(tempfile.gettempdir(), "pyYOLO_captures")
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+
+CAPTURE_DIR = _capture_dir()
+
 # 対象クラス定義（class_id順）
 CLASSES = ["l_mark", "cross", "circle_cross", "l_mark_black"]
 # クラスごとの描画色（BGRではなくRGB）
@@ -368,16 +389,21 @@ class MainWindow(QMainWindow):
         frozen = self.canvas.image.copy()
         self._stop_camera()
         self.canvas.set_image(frozen)
-        # 連番ファイル名で一時保存先を決める
-        os.makedirs("captures", exist_ok=True)
-        n = len(glob.glob("captures/cap_*.jpg"))
-        self.cur_path = f"captures/cap_{n:03d}.jpg"
-        cv2.imwrite(self.cur_path, frozen)
-        self.image_files = [self.cur_path]
-        self.cur_index = 0
         self.refresh_list()
-        self.tabs.setCurrentIndex(1)  # 撮影後はアノテーションタブへ自動で切替える
-        self.status.setText(f"キャプチャ保存: {self.cur_path}")
+        self.tabs.setCurrentIndex(1)  # 保存可否に関わらず先にアノテーションタブへ切替える
+
+        # 連番ファイル名で一時保存する（保存失敗してもUIは止めない）
+        try:
+            os.makedirs(CAPTURE_DIR, exist_ok=True)
+            n = len(glob.glob(os.path.join(CAPTURE_DIR, "cap_*.jpg")))
+            self.cur_path = os.path.join(CAPTURE_DIR, f"cap_{n:03d}.jpg")
+            cv2.imwrite(self.cur_path, frozen)
+            self.image_files = [self.cur_path]
+            self.cur_index = 0
+            self.status.setText(f"キャプチャ保存: {self.cur_path}")
+        except Exception as e:
+            self.cur_path = None
+            self.status.setText(f"キャプチャ表示OK・保存失敗: {e}")
 
     def refresh_list(self):
         """アノテーション一覧の表示を最新化する"""
