@@ -344,7 +344,7 @@ class Canvas(QWidget):
             label = "KEYPOINT MODE (K)"
             if self.zoom > 1.01:
                 label += f"  x{self.zoom:.1f}"
-            label += f"  ガイド{self.guide_angle:.0f}° (Q/R)"
+            label += f"  ガイド{self.guide_angle:.0f}° (Q/E)"
             painter.drawText(int(self._off_x) + 8, int(self._off_y) + 22, label)
 
     def _draw_keypoint(self, painter, px, py, cls_id):
@@ -1009,9 +1009,9 @@ class MainWindow(QMainWindow):
         elif key == Qt.Key_K:
             self.toggle_kpt_mode()  # キーポイント指定モードのON/OFF
         elif key == Qt.Key_Q:
-            self.canvas.rotate_guide(-2)  # ガイド線を反時計回り(CCW)
-        elif key == Qt.Key_R:
-            self.canvas.rotate_guide(2)   # ガイド線を時計回り(CW)
+            self.canvas.rotate_guide(-1)  # ガイド線を反時計回り(CCW)
+        elif key == Qt.Key_E:
+            self.canvas.rotate_guide(1)   # ガイド線を時計回り(CW)
 
     def toggle_kpt_mode(self):
         """キーポイント指定モード（L字頂点を矩形内に1点クリック）のON/OFFを切り替える"""
