@@ -9,6 +9,7 @@ import json
 
 import cv2
 import numpy as np
+from onnx_detector import OnnxDetector
 from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize
 from PySide6.QtGui import QImage, QPainter, QPen, QColor, QFont, QPixmap, QIcon
 from PySide6.QtWidgets import (
@@ -99,6 +100,7 @@ class Canvas(QWidget):
         self._off_y = 0              # 表示時の上オフセット
         self.live = False            # カメラ起動中フラグ（緑グロー枠の表示用）
         self.overlay_text = ""       # 画像右上に出す番号オーバーレイ（例 "13/20"）
+        self.detections = []         # 推論結果の表示用 [dict(x1,y1,x2,y2,conf,cls)]
 
     def set_live(self, flag):
         """カメラ起動中フラグを切り替えて再描画する"""
@@ -109,6 +111,7 @@ class Canvas(QWidget):
         """新しい画像をセットして再描画する"""
         self.image = bgr
         self.boxes = []
+        self.detections = []
         self.update()
 
     def set_class(self, cls_id):
@@ -178,6 +181,18 @@ class Canvas(QWidget):
                 painter.setPen(QPen(QColor(0, 255, 0, alpha), width))
                 m = width // 2
                 painter.drawRect(self.rect().adjusted(m, m, -m, -m))
+
+        # 推論結果（検出ボックス）を黄色で描画する
+        if self.detections:
+            painter.setFont(QFont("Meiryo", 10, QFont.Bold))
+            for d in self.detections:
+                wx1 = int(d["x1"] * self._scale) + self._off_x
+                wy1 = int(d["y1"] * self._scale) + self._off_y
+                wx2 = int(d["x2"] * self._scale) + self._off_x
+                wy2 = int(d["y2"] * self._scale) + self._off_y
+                painter.setPen(QPen(QColor(255, 230, 0), 2))
+                painter.drawRect(QRect(QPoint(wx1, wy1), QPoint(wx2, wy2)))
+                painter.drawText(wx1, wy1 - 4, f"{class_name(d['cls'])} {d['conf']:.2f}")
 
         # 単一画面の右上に画像番号をオーバーレイ表示する
         if self.overlay_text and not self.live:
@@ -271,6 +286,9 @@ class MainWindow(QMainWindow):
         self.cap = None              # cv2.VideoCapture（カメラ）
         self.timer = QTimer()        # ライブ映像更新用タイマー
         self.timer.timeout.connect(self._update_camera)
+        self.detector = None         # OnnxDetector（推論モデル）
+        self.infer_timer = QTimer()  # 推論用タイマー
+        self.infer_timer.timeout.connect(self._infer_frame)
         self.image_files = []        # フォルダ読込時の画像パス一覧
         self.cur_index = -1          # 現在表示中の画像インデックス
         self.cur_path = None         # 現在表示中の画像パス
@@ -284,6 +302,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_camera_tab(), "カメラ撮影")
         self.tabs.addTab(self._build_annotation_tab(), "アノテーション")
+        self.tabs.addTab(self._build_inference_tab(), "推論")
         self.tabs.currentChanged.connect(self._on_tab_changed)  # タブ切替で案内を更新
 
         left = QVBoxLayout()
@@ -406,14 +425,16 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, index):
         """タブ切替時にガイド表示とクラスボタンの有効/無効を切り替える"""
-        # カメラ撮影中はクラスボタンをグレーアウト（注釈はアノテーションタブでのみ）
+        # クラスボタンはアノテーションタブ(index 1)でのみ有効
         if hasattr(self, "class_buttons"):
             for b in self.class_buttons:
                 b.setEnabled(index == 1)
         if index == 0:
             self.set_status("カメラ撮影：カメラ開始 → Spaceで連続撮影 / Ctrl+Cで停止")
-        else:
+        elif index == 1:
             self.set_status("アノテーション：撮影フォルダを開く → 矩形描画 → Sで保存 / A:前 D:次")
+        else:
+            self.set_status("推論：モデル(.onnx)読込 → カメラで推論 or 表示中画像で推論")
 
     def _build_camera_tab(self):
         """タブ①：カメラ撮影パネルを組み立てる"""
@@ -481,6 +502,120 @@ class MainWindow(QMainWindow):
         w = QWidget()
         w.setLayout(lay)
         return w
+
+    def _build_inference_tab(self):
+        """タブ③：ONNX推論パネルを組み立てる（onnxruntime・ultralytics不使用）"""
+        self.model_label = QLabel("モデル未読込")
+        self.model_label.setWordWrap(True)
+
+        btn_load = QPushButton("モデル(.onnx)を読み込み")
+        btn_load.clicked.connect(self.load_model)
+
+        self.conf_spin = QSpinBox()
+        self.conf_spin.setRange(1, 99)
+        self.conf_spin.setValue(30)
+        self.conf_spin.setSuffix(" %")
+
+        self.infer_cam_index = QSpinBox()
+        self.infer_cam_index.setRange(0, 10)
+
+        btn_infer = QPushButton("カメラで推論 開始/停止")
+        btn_infer.setFocusPolicy(Qt.NoFocus)
+        btn_infer.clicked.connect(self.toggle_inference)
+
+        btn_infer_img = QPushButton("表示中の画像で推論")
+        btn_infer_img.setFocusPolicy(Qt.NoFocus)
+        btn_infer_img.clicked.connect(self.infer_current_image)
+
+        lay = QVBoxLayout()
+        lay.addWidget(QLabel("推論モデル"))
+        lay.addWidget(self.model_label)
+        lay.addWidget(btn_load)
+        lay.addWidget(QLabel("信頼度しきい値"))
+        lay.addWidget(self.conf_spin)
+        lay.addWidget(QLabel("カメラ番号"))
+        lay.addWidget(self.infer_cam_index)
+        lay.addWidget(btn_infer)
+        lay.addWidget(btn_infer_img)
+        lay.addWidget(QLabel("※ best.pt は export_onnx.py で\n   .onnx に変換して読み込みます"))
+        lay.addStretch(1)
+        w = QWidget()
+        w.setLayout(lay)
+        return w
+
+    def load_model(self):
+        """ONNXモデルを選んで検出器を初期化する"""
+        path, _ = QFileDialog.getOpenFileName(self, "ONNXモデルを開く", "", "ONNX (*.onnx)")
+        if not path:
+            return
+        try:
+            self.detector = OnnxDetector(path, conf=self.conf_spin.value() / 100.0)
+            self.model_label.setText(f"読込済: {os.path.basename(path)}")
+            self.set_status(f"モデルを読み込みました: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.warning(self, "警告", f"モデル読込失敗: {e}")
+
+    def toggle_inference(self):
+        """カメラ推論の開始/停止を切り替える"""
+        if self.infer_timer.isActive():
+            self._stop_inference()
+        else:
+            self._start_inference()
+
+    def _start_inference(self):
+        """カメラを開いてフレームごとに推論を実行する"""
+        if self.detector is None:
+            QMessageBox.information(self, "情報", "先にモデル(.onnx)を読み込んでください")
+            return
+        self._stop_camera()  # 通常のカメラ表示を止める
+        idx = self.infer_cam_index.value()
+        self.cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        if not self.cap.isOpened():
+            QMessageBox.warning(self, "警告", f"カメラ {idx} を開けません")
+            self.cap = None
+            return
+        self.detector.conf = self.conf_spin.value() / 100.0
+        self.canvas.overlay_text = ""
+        self.canvas.set_live(True)
+        self.view_stack.setCurrentIndex(0)
+        self.infer_timer.start(50)  # 約20fps（推論は重いので控えめ）
+        self.set_status("推論中：カメラ映像をリアルタイム検出 / もう一度押すと停止")
+
+    def _stop_inference(self):
+        """推論を停止してカメラを解放する"""
+        self.infer_timer.stop()
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        self.canvas.set_live(False)
+        self.canvas.detections = []
+        self.canvas.update()
+        self.set_status("推論を停止しました")
+
+    def _infer_frame(self):
+        """カメラから1フレーム取得して推論・描画する"""
+        if self.cap is None or self.detector is None:
+            return
+        ret, frame = self.cap.read()
+        if not ret:
+            return
+        self.canvas.image = frame
+        self.canvas.detections = self.detector.detect(frame)
+        self.canvas.update()
+        self.set_status(f"推論中：検出 {len(self.canvas.detections)} 個")
+
+    def infer_current_image(self):
+        """表示中の静止画に対して推論する"""
+        if self.detector is None:
+            QMessageBox.information(self, "情報", "先にモデル(.onnx)を読み込んでください")
+            return
+        if self.canvas.image is None:
+            QMessageBox.information(self, "情報", "推論する画像がありません")
+            return
+        self.detector.conf = self.conf_spin.value() / 100.0
+        self.canvas.detections = self.detector.detect(self.canvas.image)
+        self.canvas.update()
+        self.set_status(f"推論結果：検出 {len(self.canvas.detections)} 個")
 
     def keyPressEvent(self, event):
         """ショートカット：Space撮影 / Ctrl+C停止 / Ctrl+S保存 / A,D画像 / W表示 / F1〜クラス"""
@@ -633,6 +768,7 @@ class MainWindow(QMainWindow):
 
     def _start_camera(self):
         """UVCカメラを開いてライブ映像を開始する"""
+        self._stop_inference()  # 推論が動いていれば止める
         idx = self.cam_index.value()
         self.cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)  # Windowsは CAP_DSHOW が安定
         if not self.cap.isOpened():
@@ -721,7 +857,8 @@ class MainWindow(QMainWindow):
         self.set_status(f"保存完了: {label_path}（{len(self.canvas.boxes)}件）")
 
     def closeEvent(self, event):
-        """ウィンドウを閉じる前にカメラを解放する"""
+        """ウィンドウを閉じる前にカメラ・推論を解放する"""
+        self._stop_inference()
         self._stop_camera()
         event.accept()
 
