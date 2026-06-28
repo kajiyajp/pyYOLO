@@ -615,6 +615,14 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, index):
         """タブ切替時にガイド表示とクラスボタンの有効/無効を切り替える"""
+        # タブを離れたらライブ（カメラ/推論）を止める（残像・検出枠の残りを防ぐ）
+        if index != 0:
+            self._stop_camera()
+        if index != 3:
+            self._stop_inference()
+        # アノテーションタブに来たら、ライブ残像でなく現在の静止画を再表示する
+        if index == 1 and self.image_files and 0 <= self.cur_index < len(self.image_files):
+            self._load_image(self.image_files[self.cur_index])
         # クラスボタンはアノテーションタブ(index 1)でのみ有効
         if hasattr(self, "class_buttons"):
             for b in self.class_buttons:
