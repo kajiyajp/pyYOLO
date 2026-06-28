@@ -25,3 +25,6 @@ __pycache__/
 
 # キャッシュ
 dataset/labels/*.cache
+
+# OBB用の派生データセット（convert_to_obb.pyで再生成可）
+dataset_obb/
