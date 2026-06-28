@@ -6,6 +6,9 @@ runs/
 # アノテーションツールのキャプチャ画像
 captures/
 
+# クラス設定（ローカル構成。既定値はコード内DEFAULT_CLASSES）
+classes.json
+
 # PyInstallerビルド成果物
 build/
 dist/
