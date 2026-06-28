@@ -338,7 +338,6 @@ class MainWindow(QMainWindow):
             self.capture_frame()
         elif key == Qt.Key_C and ctrl:
             self._stop_camera()
-            self.set_status("カメラを停止しました")
         elif key == Qt.Key_S and ctrl:
             self.save_label()
         elif key == Qt.Key_A:
@@ -464,11 +463,14 @@ class MainWindow(QMainWindow):
 
     def _stop_camera(self):
         """カメラを停止して解放する"""
+        was_running = self.cap is not None
         if self.cap is not None:
             self.timer.stop()
             self.cap.release()
             self.cap = None
         self.canvas.set_live(False)  # 緑グロー枠OFF
+        if was_running:
+            self.set_status("カメラを停止しました（カメラ開始で再開）")
 
     def _update_camera(self):
         """カメラから1フレーム取得して表示する（矩形は保持しない）"""
