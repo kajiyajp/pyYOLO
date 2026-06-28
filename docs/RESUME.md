@@ -37,17 +37,30 @@
 
 ---
 
-## 次にやること（最優先：Keypoint検証）
+## Keypoint検証：基盤完成（2026-06-28）
 
-0. **Keypoint検証**（ライセンス導入判断の決め手）
-   - 目的：YOLO KeypointでL字頂点を直接検出し、精度/確度を測る
-   - 判断軸：①CVを置換できるか ②CV補助に留まるか（黒皮鋼板などCV苦手素材で特に有効）
-   - 事前見立て：YOLO Keypointは数px精度。PointLock CVは±0.1px目標なので
-     置換はハードル高い。現実解は「YOLOが粗く当て→CVが追い込む」
-   - 準備：Keypointアノテーション（頂点1点指定）＋誤差測定スクリプト
-     → アノテーションツールに点打ち機能追加 or Roboflow
-   - ライセンス：15台買い切りの予想は一括150〜400万円（高め）。
-     Keypointの価値次第で支払い判断。アジア担当と交渉予定。
+多エージェントワークフロー（設計→敵対的検証→統合）で**検証基盤を構築・配線確認済み**。
+
+- 実装済み：
+  - `annotation_tool.py` Kキーでキーポイントモード（矩形内の頂点を1点クリック指定）
+  - `scripts/train_pose.py`（Pose学習・fliplr=0.0修正済み）
+  - `scripts/measure_keypoint.py`（pixel誤差・ジッター計測）
+  - `scripts/make_pose_smoketest.py`（bbox→pose変換）/ `configs/pose_example.yaml`
+- 確定事項：YOLO Poseラベル＝`cls cx cy w h px py v`（8列・正規化・v∈{0,1,2}）。
+  kpt_shape:[1,3], flip_idx:[0]。ultralytics 8.4.80実ソースと一致を敵対的検証で確認。
+- 重要修正：単一非対称頂点に左右反転は学習を歪める→fliplr/flipud=0.0必須。
+- スモーク（導出点・10ep）で pose学習→計測まで一気通貫を確認（pose mAP50=0.92）。
+  ※スモークの数値は配線確認用で精度評価ではない。
+
+## 次にやること（最優先：本物のKeypointで精度・安定性を測る）
+
+0. **本物のL字頂点をアノテーション → 学習 → 評価**
+   - アノテツールのKモードで実画像の頂点を少数枚（まず20〜40枚）指定
+   - 「学習・変換」タブ①でデータセット生成（pose yamlにkpt_shape自動付与）
+   - `scripts/train_pose.py` で本epoch学習 → `measure_keypoint.py accuracy` で誤差
+   - **安定性は連続動画が必要**：実機ライブ or 動画を撮り `stability --frames` で評価
+   - 判断軸：①CV置換できるか（±0.1px級は高ハードル） ②CV補助か（YOLOが粗く当て→CVが追い込む。黒皮鋼板などで有効）
+   - ライセンス：15台買い切り予想 一括150〜400万円（高め）。価値次第で判断。アジア担当と交渉予定。
 
 1. Phase 3：実機で各ターゲットを撮影 → クラス設定 → 注釈
    - クラス：l_mark / cross / circle_cross / l_mark_black（設定画面で定義）
