@@ -68,6 +68,15 @@ def save_classes(classes):
 # 対象クラス（実行時に編集可能。class_id = リストの並び順）
 CLASSES = load_classes()
 
+# --- YOLO Pose(Keypoint)設定 ---
+# kpt_shape = [キーポイント数K, 次元D]。本プロジェクトは L字頂点1点・(x,y,visible) の D=3。
+# pose形式の1行 = "cls cx cy w h  px1 py1 v1 ... pxK pyK vK"（全て0..1正規化）。
+# 列数は固定: 5 + K*D。混在(5値行と8値行)はultralytics Poseローダが弾くため、
+# pose保存時は頂点未指定の矩形も px=py=0, v=0 で必ず全列書き出す(v=0は損失から除外される)。
+KPT_COUNT = 1   # K: キーポイント数
+KPT_DIMS = 3    # D: x,y,visible
+POSE_NCOLS = 5 + KPT_COUNT * KPT_DIMS   # pose 1行の列数(K=1,D=3 → 8)
+
 # クラス描画色のパレット（クラス数より多めに用意し、足りなければ循環）
 PALETTE = [
     QColor(0, 255, 0), QColor(0, 180, 255), QColor(255, 180, 0), QColor(255, 0, 180),
@@ -101,6 +110,9 @@ class Canvas(QWidget):
         self.live = False            # カメラ起動中フラグ（緑グロー枠の表示用）
         self.overlay_text = ""       # 画像右上に出す番号オーバーレイ（例 "13/20"）
         self.detections = []         # 推論結果の表示用 [dict(x1,y1,x2,y2,conf,cls)]
+        # --- キーポイントモード（YOLO Pose用：L字頂点を矩形ごとに1点指定）---
+        self.kpt_mode = False        # キーポイント指定モードON/OFF（Kキーで切替）
+        self.keypoints = []          # boxesと並走。各要素は (px, py) 元画像px座標 or None（未指定）
 
     def set_live(self, flag):
         """カメラ起動中フラグを切り替えて再描画する"""
@@ -111,6 +123,7 @@ class Canvas(QWidget):
         """新しい画像をセットして再描画する"""
         self.image = bgr
         self.boxes = []
+        self.keypoints = []          # キーポイントも初期化
         self.detections = []
         self.update()
 
@@ -121,13 +134,31 @@ class Canvas(QWidget):
     def clear_boxes(self):
         """全ての矩形を削除する"""
         self.boxes = []
+        self.keypoints = []          # 対応するキーポイントも全消去
         self.update()
 
     def delete_box(self, index):
-        """指定インデックスの矩形を削除する"""
+        """指定インデックスの矩形を削除する（対応するキーポイントも消す）"""
         if 0 <= index < len(self.boxes):
             del self.boxes[index]
+            if index < len(self.keypoints):
+                del self.keypoints[index]
             self.update()
+
+    def set_kpt_mode(self, flag):
+        """キーポイント指定モードのON/OFFを切り替えて再描画する"""
+        self.kpt_mode = flag
+        self.update()
+
+    def _box_at(self, ix, iy):
+        """元画像座標(ix,iy)を含む矩形のindexを返す（複数なら最小面積を優先・無ければNone）"""
+        best, best_area = None, None
+        for i, (cls_id, x1, y1, x2, y2) in enumerate(self.boxes):
+            if x1 <= ix <= x2 and y1 <= iy <= y2:
+                area = (x2 - x1) * (y2 - y1)
+                if best_area is None or area < best_area:
+                    best, best_area = i, area
+        return best
 
     def _calc_transform(self):
         """画像をウィジェットに収める倍率とオフセットを計算する"""
@@ -169,6 +200,13 @@ class Canvas(QWidget):
         for cls_id, x1, y1, x2, y2 in self.boxes:
             self._draw_box(painter, cls_id, x1, y1, x2, y2)
 
+        # 各矩形のキーポイント（L字頂点）を十字で描画する
+        for i, kpt in enumerate(self.keypoints):
+            if kpt is None:
+                continue
+            cls_id = self.boxes[i][0] if i < len(self.boxes) else 0
+            self._draw_keypoint(painter, kpt[0], kpt[1], cls_id)
+
         # ドラッグ中の矩形を描画
         if self.drawing:
             pen = QPen(class_color(self.current_class), 2, Qt.DashLine)
@@ -208,6 +246,23 @@ class Canvas(QWidget):
             painter.setPen(QColor(0, 255, 0))
             painter.drawText(x + pad, y + th - 2, self.overlay_text)
 
+        # キーポイントモード中は左上に小さく表示する
+        if self.kpt_mode and self.image is not None:
+            painter.setFont(QFont("Meiryo", 11, QFont.Bold))
+            painter.setPen(QColor(255, 0, 255))
+            painter.drawText(self._off_x + 8, self._off_y + 22, "KEYPOINT MODE (K)")
+
+    def _draw_keypoint(self, painter, px, py, cls_id):
+        """キーポイント（頂点）を小さな十字＋中心点で描画する"""
+        wx = int(px * self._scale) + self._off_x
+        wy = int(py * self._scale) + self._off_y
+        r = 7  # 十字の腕の長さ（ウィジェットpx）
+        # 視認性のため白の縁取り→マゼンタ本体の二重描き
+        for color, width in [(QColor(255, 255, 255), 4), (QColor(255, 0, 255), 2)]:
+            painter.setPen(QPen(color, width))
+            painter.drawLine(wx - r, wy, wx + r, wy)
+            painter.drawLine(wx, wy - r, wx, wy + r)
+
     def _draw_box(self, painter, cls_id, x1, y1, x2, y2):
         """1つの矩形とクラス名ラベルを描画する"""
         color = class_color(cls_id)
@@ -221,9 +276,27 @@ class Canvas(QWidget):
         painter.drawText(wx1, wy1 - 4, class_name(cls_id))
 
     def mousePressEvent(self, event):
-        """ドラッグ開始：矩形の始点を記録する"""
+        """ドラッグ開始：矩形の始点を記録する（キーポイントモードでは頂点を1点指定）"""
         if self.image is None or event.button() != Qt.LeftButton:
             return
+        # キーポイントモード：クリック点を含む矩形を探し、その頂点を登録する
+        if self.kpt_mode:
+            ix, iy = self._widget_to_image(event.position().toPoint())
+            idx = self._box_at(ix, iy)
+            win = self.window()
+            if idx is None:
+                if hasattr(win, "set_status"):
+                    win.set_status("キーポイントは矩形の内側をクリックして指定してください")
+                return
+            # boxesとkeypointsの長さを揃えてから該当indexに格納
+            while len(self.keypoints) < len(self.boxes):
+                self.keypoints.append(None)
+            self.keypoints[idx] = (ix, iy)
+            self.update()
+            if hasattr(win, "refresh_list"):
+                win.refresh_list()
+            return
+        # 通常モード：矩形ドラッグ開始
         self.drawing = True
         self.start_pt = event.position().toPoint()
         self.cur_pt = self.start_pt
@@ -606,11 +679,27 @@ class MainWindow(QMainWindow):
             bn = os.path.splitext(os.path.basename(jpg))[0]
             shutil.copy(jpg, os.path.join(dst, "images", s, bn + ".jpg"))
             shutil.copy(txt, os.path.join(dst, "labels", s, bn + ".txt"))
+        # pose形式(5+K*D列)のラベルが含まれるか判定する
+        # (含まれる場合は yaml に kpt_shape / flip_idx を付けないと Pose 学習できない)
+        is_pose = False
+        for _, txt in pairs:
+            with open(txt) as tf:
+                for line in tf:
+                    if len(line.split()) == POSE_NCOLS:
+                        is_pose = True
+                        break
+            if is_pose:
+                break
         # data.yamlを書き出す（クラスは現在のCLASSES）
         yaml_path = os.path.join(base, "datasets", f"{name}.yaml")
         with open(yaml_path, "w", encoding="utf-8") as f:
             f.write(f"path: {dst}\n")
             f.write("train: images/train\nval: images/val\n")
+            if is_pose:
+                # 単一非対称頂点(K=1)。flip_idxは長さKで [0]。
+                # 注意: K=1の非対称頂点では学習側で fliplr=0.0 を推奨(train_pose.py参照)。
+                f.write(f"kpt_shape: [{KPT_COUNT}, {KPT_DIMS}]\n")
+                f.write(f"flip_idx: [{', '.join(str(i) for i in range(KPT_COUNT))}]\n")
             f.write(f"nc: {len(CLASSES)}\nnames:\n")
             for i, c in enumerate(CLASSES):
                 f.write(f"  {i}: {c}\n")
@@ -802,6 +891,17 @@ class MainWindow(QMainWindow):
             self.navigate(1)
         elif key == Qt.Key_W:
             self.toggle_view()
+        elif key == Qt.Key_K:
+            self.toggle_kpt_mode()  # キーポイント指定モードのON/OFF
+
+    def toggle_kpt_mode(self):
+        """キーポイント指定モード（L字頂点を矩形内に1点クリック）のON/OFFを切り替える"""
+        new_mode = not self.canvas.kpt_mode
+        self.canvas.set_kpt_mode(new_mode)
+        if new_mode:
+            self.set_status("キーポイントモードON：矩形の内側をクリックで頂点を1点指定 / Kで解除")
+        else:
+            self.set_status("キーポイントモードOFF：矩形を描画できます / Kで頂点指定")
 
     def open_file(self):
         """単一画像ファイルを開く"""
@@ -871,14 +971,21 @@ class MainWindow(QMainWindow):
             with open(label_path) as f:
                 for line in f:
                     p = line.split()
-                    if len(p) != 5:
+                    if len(p) not in (5, POSE_NCOLS):   # bbox/Pose 両対応
                         continue
                     cls = int(p[0])
-                    cx, cy, bw, bh = map(float, p[1:])
+                    cx, cy, bw, bh = map(float, p[1:5])
                     x1, y1 = int((cx - bw / 2) * w), int((cy - bh / 2) * h)
                     x2, y2 = int((cx + bw / 2) * w), int((cy + bh / 2) * h)
                     c = class_color(cls)
                     cv2.rectangle(img, (x1, y1), (x2, y2), (c.blue(), c.green(), c.red()), 4)
+                    # pose形式なら頂点も十字で描く(v>0 のみ)
+                    if len(p) == POSE_NCOLS:
+                        v = float(p[7]) if KPT_DIMS == 3 else 2.0
+                        if v > 0:
+                            kx, ky = int(float(p[5]) * w), int(float(p[6]) * h)
+                            cv2.drawMarker(img, (kx, ky), (255, 0, 255),
+                                           cv2.MARKER_CROSS, 16, 3)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
         pix = QPixmap.fromImage(qimg).scaled(260, 195, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -905,23 +1012,38 @@ class MainWindow(QMainWindow):
         self.set_status(f"{os.path.basename(path)}  ({self.cur_index + 1}/{len(self.image_files)})  A:前 D:次 W:表示切替")
 
     def _load_existing_label(self, img_path, w, h):
-        """同名の.txtがあればYOLO座標を読み込み矩形を復元する"""
+        """同名の.txtがあればYOLO座標を読み込み矩形を復元する。
+        bbox(5値) と pose(5+K*D 値) の両方を受理し、pose なら頂点も復元する。
+        頂点の v=0(未ラベル) は未指定(None)として扱う。"""
         label_path = os.path.splitext(img_path)[0] + ".txt"
         if not os.path.exists(label_path):
+            self.canvas.keypoints = []
             return
         boxes = []
+        keypoints = []
         with open(label_path) as f:
             for line in f:
                 parts = line.split()
-                if len(parts) != 5:
+                # bbox(5) または pose(5+K*D) のみ受理(列数固定で混在を弾く)
+                if len(parts) not in (5, POSE_NCOLS):
                     continue
-                cls, cx, cy, bw, bh = int(parts[0]), *map(float, parts[1:])
+                cls = int(parts[0])
+                cx, cy, bw, bh = map(float, parts[1:5])
                 x1 = int((cx - bw / 2) * w)
                 y1 = int((cy - bh / 2) * h)
                 x2 = int((cx + bw / 2) * w)
                 y2 = int((cy + bh / 2) * h)
                 boxes.append((cls, x1, y1, x2, y2))
+                if len(parts) == POSE_NCOLS:
+                    # 先頭キーポイント(K=1運用)を px,py,v として復元。v=0 は未指定扱い。
+                    px = float(parts[5])
+                    py = float(parts[6])
+                    v = float(parts[7]) if KPT_DIMS == 3 else 2.0
+                    keypoints.append((int(px * w), int(py * h)) if v > 0 else None)
+                else:
+                    keypoints.append(None)
         self.canvas.boxes = boxes
+        self.canvas.keypoints = keypoints
         self.canvas.update()
 
     def toggle_camera(self):
@@ -992,10 +1114,13 @@ class MainWindow(QMainWindow):
         self._load_image(files[0])
 
     def refresh_list(self):
-        """アノテーション一覧の表示を最新化する"""
+        """アノテーション一覧の表示を最新化する（キーポイント有無も付記）"""
         self.box_list.clear()
-        for cls_id, x1, y1, x2, y2 in self.canvas.boxes:
-            self.box_list.addItem(f"{class_name(cls_id)}  ({x1},{y1})-({x2},{y2})")
+        kpts = self.canvas.keypoints
+        for i, (cls_id, x1, y1, x2, y2) in enumerate(self.canvas.boxes):
+            kp = kpts[i] if i < len(kpts) else None
+            mark = f"  ◆({kp[0]},{kp[1]})" if kp else "  ◇頂点未指定"
+            self.box_list.addItem(f"{class_name(cls_id)}  ({x1},{y1})-({x2},{y2}){mark}")
 
     def delete_selected(self):
         """一覧で選択中の矩形を削除する"""
@@ -1005,21 +1130,49 @@ class MainWindow(QMainWindow):
             self.refresh_list()
 
     def save_label(self):
-        """現在の矩形をYOLOフォーマット(.txt)で保存する"""
+        """現在の矩形をYOLOフォーマット(.txt)で保存する。
+        キーポイントが1点でも指定されていれば pose形式(全矩形 5+K*D 列)で保存する。
+        頂点未指定の矩形は px=py=0, v=0 で書き、列数を揃える(混在ラベルを作らない)。
+        v=0 はultralyticsの損失計算で除外されるため『未ラベル点』として正しく扱われる。"""
         if self.cur_path is None or self.canvas.image is None:
             QMessageBox.warning(self, "警告", "保存対象の画像がありません")
             return
         h, w = self.canvas.image.shape[:2]
         label_path = os.path.splitext(self.cur_path)[0] + ".txt"
+        kpts = self.canvas.keypoints
+        # 1点でも頂点が指定されていれば pose形式で出す
+        pose_mode = any(
+            (i < len(kpts) and kpts[i] is not None)
+            for i in range(len(self.canvas.boxes))
+        )
         with open(label_path, "w") as f:
-            for cls_id, x1, y1, x2, y2 in self.canvas.boxes:
+            for i, (cls_id, x1, y1, x2, y2) in enumerate(self.canvas.boxes):
                 # ピクセル座標 → YOLO正規化座標(cx cy w h)
                 cx = ((x1 + x2) / 2) / w
                 cy = ((y1 + y2) / 2) / h
                 bw = abs(x2 - x1) / w
                 bh = abs(y2 - y1) / h
-                f.write(f"{cls_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
-        self.set_status(f"保存完了: {label_path}（{len(self.canvas.boxes)}件）")
+                line = f"{cls_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}"
+                if pose_mode:
+                    # 全矩形を固定列数(5+K*D)で書く。本プロジェクトは K=1。
+                    kp = kpts[i] if i < len(kpts) else None
+                    if kp is not None:
+                        px, py = kp[0] / w, kp[1] / h
+                        line += f" {px:.6f} {py:.6f} 2"   # v=2 可視
+                    else:
+                        line += " 0.000000 0.000000 0"     # 未指定: v=0(損失除外)
+                f.write(line + "\n")
+        if pose_mode:
+            missing = sum(
+                1 for i in range(len(self.canvas.boxes))
+                if i >= len(kpts) or kpts[i] is None
+            )
+            note = f"  ※頂点未指定 {missing}件は v=0 で保存(学習で除外されます)" if missing else ""
+            self.set_status(
+                f"保存完了(pose 8値): {label_path}（{len(self.canvas.boxes)}件）{note}"
+            )
+        else:
+            self.set_status(f"保存完了(bbox 5値): {label_path}（{len(self.canvas.boxes)}件）")
 
     def closeEvent(self, event):
         """ウィンドウを閉じる前にカメラ・推論を解放する"""

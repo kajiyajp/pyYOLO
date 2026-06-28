@@ -35,3 +35,6 @@ dataset_real/
 # 学習・変換タブが作るモデル別データセット
 datasets/
 *.onnx
+
+# Pose配線確認用の派生データ（make_pose_smoketest.pyで再生成可）
+dataset_pose_smoke/
