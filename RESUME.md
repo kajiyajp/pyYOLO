@@ -10,36 +10,40 @@
 
 ## 直近でやったこと
 
-- CLAUDE.md / README.md / ROADMAP.md / RESUME.md を整備
-- `annotation_tool.py` を作成（PySide6 + UVC + YOLO形式保存）→ mainにマージ済み
-- `build_exe.py` でPyInstaller exe化（社内配布用・約246MB）
-  - exe単体起動を確認済み（dist/pyYOLO-Annotator/pyYOLO-Annotator.exe）
+- アノテーションツール（annotation_tool.py）をPhase 1として一通り完成
+  - カメラ撮影タブ／アノテーションタブのタブ分離
+  - カメラ起動中の緑グロー枠・Spaceで連続撮影（カメラ停止せず）
+  - クラス選択を上部トグルボタン化（F1〜・アクティブはテキスト緑グロー）
+  - クラスを classes.json で設定可能化（設定画面・再起動後反映）
+  - 単一/複数画面（サムネイル）切替（W）・注釈枠/未済の表示
+  - 単一画面右上に画像番号オーバーレイ、下部ステータスバー
+  - ショートカット：Space撮影 / Ctrl+C停止 / S保存 / A,D画像 / W表示 / F1〜クラス
+  - PyInstallerでexe化（build_exe.py・約246MB）
+  - 実機UVCカメラ（Camo経由iPhone）で動作確認済み
 
 ---
 
 ## 次にやること
 
-1. `annotation_tool.py` の実機動作確認（ノートPC）
-   - UVCカメラでライブ映像が表示されるか
-   - 矩形描画 → クラス選択 → 保存 が正しく動くか
-   - 保存した .txt を `check_annotation.py` で検証
-2. exeを社内ノートPCに配布してテスト
-   - `python build_exe.py` でビルド → dist/ フォルダをzip化して配布
-3. Phase 2（ONNX推論のリアルタイム可視化）に着手
+1. Phase 3：実機で各ターゲットを撮影 → クラス設定 → 注釈
+   - クラス：l_mark / cross / circle_cross / l_mark_black（設定画面で定義）
+   - 撮影フォルダを開く → 注釈 → S保存 → check_annotation.py で検証
+2. Phase 2：ONNX推論のリアルタイム可視化（best.onnxをGUIで読み込み）
+3. Phase 4：PointLock連携（best.onnxの受け渡し → ROI自動設定）
 
 ---
 
 ## 現在のブランチ状態
 
-- 作業ブランチ：`feature/annotation-tool`
-- マージ前に動作確認が必要
+- main が最新（Phase 1の全機能マージ済み）
+- exeビルド前は必ずアプリを閉じる（cv2.pyd がロックされ PermissionError になる）
 
 ---
 
 ## 未解決・懸念点
 
-- Python 3.14 + PySide6 6.11.1 でのUVCカメラ動作は未検証
-- カメラが複数ある場合のデバイス選択UIは未実装（暫定でindex 0）
+- カメラが複数ある場合のデバイス選択UIは未実装（カメラ番号spinで暫定対応）
+- クラス名に日本語を使うと、画像へcv2描画する文字が豆腐になる（矩形のみなら問題なし）
 - YOLO26nの信頼度（0.808）がYOLO11n（0.884）より低い
   → 学習データが均質な動画1本のため。実機の多様な画像で改善見込み
 
@@ -49,4 +53,5 @@
 
 - YOLO = 「見つける」、既存CV = 「測る」の役割分担
 - ultralyticsは社内学習専用、製品推論は onnxruntime（MIT）
-- 対象クラス：l_mark / cross / circle_cross / l_mark_black
+- クラスIDはボタンの並び順。注釈後に順番/個数を変えるとIDがずれる
+- ライセンス：製品化時はUltralytics Enterprise交渉（最大15台・買い切り希望）
