@@ -13,6 +13,7 @@ from PySide6.QtGui import QImage, QPainter, QPen, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QComboBox,
     QListWidget, QFileDialog, QHBoxLayout, QVBoxLayout, QSpinBox, QMessageBox,
+    QTabWidget,
 )
 
 # 対象クラス定義（class_id順）
@@ -171,25 +172,62 @@ class MainWindow(QMainWindow):
         self._build_ui()
 
     def _build_ui(self):
-        """ウィジェットを配置してUIを組み立てる"""
+        """ウィジェットを配置してUIを組み立てる（左パネルはタブ構成）"""
         self.canvas = Canvas()
+        self.status = QLabel("準備完了")
+        self.status.setWordWrap(True)
 
-        # --- 左側の操作パネル ---
+        # タブで「カメラ撮影」と「アノテーション」を分ける
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_camera_tab(), "カメラ撮影")
+        self.tabs.addTab(self._build_annotation_tab(), "アノテーション")
+
+        left = QVBoxLayout()
+        left.addWidget(self.tabs)
+        left.addWidget(self.status)
+        left_widget = QWidget()
+        left_widget.setLayout(left)
+        left_widget.setFixedWidth(280)
+
+        root = QHBoxLayout()
+        root.addWidget(left_widget)
+        root.addWidget(self.canvas, stretch=1)
+
+        container = QWidget()
+        container.setLayout(root)
+        self.setCentralWidget(container)
+
+    def _build_camera_tab(self):
+        """タブ①：カメラ撮影パネルを組み立てる"""
+        self.cam_index = QSpinBox()
+        self.cam_index.setRange(0, 10)
+
+        btn_cam = QPushButton("カメラ開始/停止")
+        btn_cam.clicked.connect(self.toggle_camera)
+        btn_capture = QPushButton("キャプチャ（Space）")
+        btn_capture.clicked.connect(self.capture_frame)
+
+        lay = QVBoxLayout()
+        lay.addWidget(QLabel("カメラ番号"))
+        lay.addWidget(self.cam_index)
+        lay.addWidget(btn_cam)
+        lay.addWidget(btn_capture)
+        lay.addWidget(QLabel("※ キャプチャすると\n   アノテーションタブに切替わります"))
+        lay.addStretch(1)
+        w = QWidget()
+        w.setLayout(lay)
+        return w
+
+    def _build_annotation_tab(self):
+        """タブ②：アノテーションパネルを組み立てる"""
         self.class_combo = QComboBox()
         self.class_combo.addItems(CLASSES)
         self.class_combo.currentIndexChanged.connect(self.canvas.set_class)
-
-        self.cam_index = QSpinBox()
-        self.cam_index.setRange(0, 10)
 
         btn_open_file = QPushButton("画像を開く")
         btn_open_file.clicked.connect(self.open_file)
         btn_open_folder = QPushButton("フォルダを開く")
         btn_open_folder.clicked.connect(self.open_folder)
-        btn_cam = QPushButton("カメラ開始/停止")
-        btn_cam.clicked.connect(self.toggle_camera)
-        btn_capture = QPushButton("キャプチャ（Space）")
-        btn_capture.clicked.connect(self.capture_frame)
         btn_prev = QPushButton("← 前の画像")
         btn_prev.clicked.connect(lambda: self.navigate(-1))
         btn_next = QPushButton("次の画像 →")
@@ -202,39 +240,22 @@ class MainWindow(QMainWindow):
         btn_save.clicked.connect(self.save_label)
 
         self.box_list = QListWidget()
-        self.status = QLabel("準備完了")
 
-        left = QVBoxLayout()
-        left.addWidget(QLabel("クラス選択"))
-        left.addWidget(self.class_combo)
-        left.addWidget(QLabel("カメラ番号"))
-        left.addWidget(self.cam_index)
-        left.addWidget(btn_cam)
-        left.addWidget(btn_capture)
-        left.addWidget(QLabel("─" * 20))
-        left.addWidget(btn_open_file)
-        left.addWidget(btn_open_folder)
-        left.addWidget(btn_prev)
-        left.addWidget(btn_next)
-        left.addWidget(QLabel("─" * 20))
-        left.addWidget(QLabel("アノテーション一覧"))
-        left.addWidget(self.box_list)
-        left.addWidget(btn_delete)
-        left.addWidget(btn_clear)
-        left.addWidget(btn_save)
-        left.addWidget(self.status)
-
-        left_widget = QWidget()
-        left_widget.setLayout(left)
-        left_widget.setFixedWidth(260)
-
-        root = QHBoxLayout()
-        root.addWidget(left_widget)
-        root.addWidget(self.canvas, stretch=1)
-
-        container = QWidget()
-        container.setLayout(root)
-        self.setCentralWidget(container)
+        lay = QVBoxLayout()
+        lay.addWidget(QLabel("クラス選択"))
+        lay.addWidget(self.class_combo)
+        lay.addWidget(btn_open_file)
+        lay.addWidget(btn_open_folder)
+        lay.addWidget(btn_prev)
+        lay.addWidget(btn_next)
+        lay.addWidget(QLabel("アノテーション一覧"))
+        lay.addWidget(self.box_list)
+        lay.addWidget(btn_delete)
+        lay.addWidget(btn_clear)
+        lay.addWidget(btn_save)
+        w = QWidget()
+        w.setLayout(lay)
+        return w
 
     def keyPressEvent(self, event):
         """ショートカット：Spaceでキャプチャ、Ctrl+Sで保存"""
@@ -355,6 +376,7 @@ class MainWindow(QMainWindow):
         self.image_files = [self.cur_path]
         self.cur_index = 0
         self.refresh_list()
+        self.tabs.setCurrentIndex(1)  # 撮影後はアノテーションタブへ自動で切替える
         self.status.setText(f"キャプチャ保存: {self.cur_path}")
 
     def refresh_list(self):
