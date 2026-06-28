@@ -344,7 +344,7 @@ class Canvas(QWidget):
             label = "KEYPOINT MODE (K)"
             if self.zoom > 1.01:
                 label += f"  x{self.zoom:.1f}"
-            label += f"  ガイド{self.guide_angle:.0f}° (Q/E)"
+            label += f"  ガイド{self.guide_angle:.1f}° (Q/E, Shiftで0.5°)"
             painter.drawText(int(self._off_x) + 8, int(self._off_y) + 22, label)
 
     def _draw_keypoint(self, painter, px, py, cls_id):
@@ -990,6 +990,7 @@ class MainWindow(QMainWindow):
         """ショートカット：Space撮影 / Ctrl+C停止 / Ctrl+S保存 / A,D画像 / W表示 / F1〜クラス"""
         key = event.key()
         ctrl = event.modifiers() == Qt.ControlModifier
+        shift = bool(event.modifiers() & Qt.ShiftModifier)  # ガイド微調整用
         # F1〜F12でクラス選択
         if Qt.Key_F1 <= key <= Qt.Key_F12:
             self.select_class(key - Qt.Key_F1)
@@ -1009,9 +1010,9 @@ class MainWindow(QMainWindow):
         elif key == Qt.Key_K:
             self.toggle_kpt_mode()  # キーポイント指定モードのON/OFF
         elif key == Qt.Key_Q:
-            self.canvas.rotate_guide(-1)  # ガイド線を反時計回り(CCW)
+            self.canvas.rotate_guide(-0.5 if shift else -1)  # 反時計回り(CCW)。Shiftで微調整
         elif key == Qt.Key_E:
-            self.canvas.rotate_guide(1)   # ガイド線を時計回り(CW)
+            self.canvas.rotate_guide(0.5 if shift else 1)    # 時計回り(CW)。Shiftで微調整
 
     def toggle_kpt_mode(self):
         """キーポイント指定モード（L字頂点を矩形内に1点クリック）のON/OFFを切り替える"""
@@ -1070,22 +1071,25 @@ class MainWindow(QMainWindow):
         """読込中の画像をサムネイルとして一覧に並べる（アノテーション枠付き）"""
         self.gallery.clear()
         for i, path in enumerate(self.image_files):
-            pix, annotated = self._make_thumbnail(path)
+            pix, annotated, has_kpt = self._make_thumbnail(path)
             if pix is None:
                 continue
             mark = " ✓済" if annotated else " －未"
+            if has_kpt:
+                mark += " K"          # 頂点保存済み
             item = QListWidgetItem(QIcon(pix), os.path.basename(path) + mark)
             item.setData(Qt.UserRole, i)
             self.gallery.addItem(item)
 
     def _make_thumbnail(self, path):
-        """画像にアノテーション枠を描いたサムネイル(QPixmap)と注釈有無を返す"""
+        """画像に注釈枠・頂点を描いたサムネイルと(注釈有無, 頂点有無)を返す"""
         img = cv2.imread(path)
         if img is None:
-            return None, False
+            return None, False, False
         h, w = img.shape[:2]
         label_path = os.path.splitext(path)[0] + ".txt"
         annotated = os.path.exists(label_path) and os.path.getsize(label_path) > 0
+        has_kpt = False
         if os.path.exists(label_path):
             with open(label_path) as f:
                 for line in f:
@@ -1102,13 +1106,18 @@ class MainWindow(QMainWindow):
                     if len(p) == POSE_NCOLS:
                         v = float(p[7]) if KPT_DIMS == 3 else 2.0
                         if v > 0:
+                            has_kpt = True
                             kx, ky = int(float(p[5]) * w), int(float(p[6]) * h)
                             cv2.drawMarker(img, (kx, ky), (255, 0, 255),
                                            cv2.MARKER_CROSS, 16, 3)
+        # 頂点が保存済みなら右上に大きく "K" を描く（複数画面で一目で分かる）
+        if has_kpt:
+            cv2.putText(img, "K", (w - 70, 70), cv2.FONT_HERSHEY_SIMPLEX,
+                        2.2, (255, 0, 255), 6, cv2.LINE_AA)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
         pix = QPixmap.fromImage(qimg).scaled(260, 195, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        return pix, annotated
+        return pix, annotated, has_kpt
 
     def _on_gallery_click(self, item):
         """サムネイルをクリックしたらその画像を単一画面で開く"""
