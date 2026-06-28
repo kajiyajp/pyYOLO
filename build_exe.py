@@ -27,6 +27,15 @@ def build():
         args += ["--exclude-module", mod]
 
     PyInstaller.__main__.run(args)
+
+    # 学習・変換スクリプトをexe同階層にコピー（別プロセスpythonから実行するため）
+    import os
+    import shutil
+    dist_dir = os.path.join("dist", "pyYOLO-Annotator")
+    for s in ("train_model.py", "export_model.py"):
+        if os.path.exists(s):
+            shutil.copy(s, os.path.join(dist_dir, s))
+
     print("\nビルド完了: dist/pyYOLO-Annotator/pyYOLO-Annotator.exe")
     print("配布時は dist/pyYOLO-Annotator フォルダごとzip化して渡す")
 

@@ -538,18 +538,35 @@ class MainWindow(QMainWindow):
         lay.addWidget(QLabel("ログ"))
         lay.addWidget(self.train_log)
 
-        # 配布exe（frozen）ではultralytics非同梱のため学習・変換は不可
-        if getattr(sys, "frozen", False):
+        # 学習・変換に使えるPython（ultralytics導入済み）を探す
+        self.trainer_py = self._trainer_python()
+        if self.trainer_py is None:
             for b in (btn_train, btn_export):
                 b.setEnabled(False)
-            note = QLabel("※ 学習・変換は開発環境（python実行）でのみ可能です")
+            note = QLabel("※ 学習・変換にはPython（ultralytics導入済み）が必要です。\n   このPCで見つかりませんでした。")
             note.setStyleSheet("color:#ff8080;")
+            note.setWordWrap(True)
+            lay.addWidget(note)
+        else:
+            note = QLabel(f"学習に使うPython: {self.trainer_py}")
+            note.setStyleSheet("color:#80c0ff;")
             note.setWordWrap(True)
             lay.addWidget(note)
 
         w = QWidget()
         w.setLayout(lay)
         return w
+
+    def _trainer_python(self):
+        """学習・変換に使えるPython実行ファイルを探す（py実行ならそれ、exeならPATH探索）"""
+        if not getattr(sys, "frozen", False):
+            return sys.executable  # python起動ならそのまま使える
+        import shutil
+        for cand in ("python", "py"):
+            p = shutil.which(cand)
+            if p:
+                return p
+        return None
 
     def _choose_train_src(self):
         """学習元の撮影フォルダを選ぶ"""
@@ -604,7 +621,7 @@ class MainWindow(QMainWindow):
 
     def start_training(self):
         """データセットでYOLO学習を開始する（別プロセス）"""
-        if getattr(sys, "frozen", False):
+        if not self.trainer_py:
             return
         name = self.model_name_edit.text().strip() or "model"
         yaml_path = getattr(self, "train_yaml", os.path.join(_base_dir(), "datasets", f"{name}.yaml"))
@@ -616,7 +633,7 @@ class MainWindow(QMainWindow):
 
     def start_export(self):
         """学習済みbest.ptをONNXに変換する（別プロセス）"""
-        if getattr(sys, "frozen", False):
+        if not self.trainer_py:
             return
         pt, _ = QFileDialog.getOpenFileName(self, "best.ptを選択",
                                             os.path.join(_base_dir(), "runs"), "PyTorch (*.pt)")
@@ -640,7 +657,9 @@ class MainWindow(QMainWindow):
         self._proc.readyReadStandardOutput.connect(
             lambda: self._train_log(bytes(self._proc.readAllStandardOutput()).decode("utf-8", "ignore")))
         self._proc.finished.connect(self._on_proc_finished)
-        self._proc.start(sys.executable, args)
+        # スクリプトはbase_dir（pyなら repo、exeなら exe同階層）にある
+        script = os.path.join(_base_dir(), args[0])
+        self._proc.start(self.trainer_py, [script] + args[1:])
 
     def _on_proc_finished(self):
         """別プロセス完了時にボタンを戻す"""
