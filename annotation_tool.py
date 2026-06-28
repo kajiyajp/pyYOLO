@@ -9,11 +9,11 @@ import glob
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, QRect, QPoint
-from PySide6.QtGui import QImage, QPainter, QPen, QColor, QFont
+from PySide6.QtGui import QImage, QPainter, QPen, QColor, QFont, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QComboBox,
-    QListWidget, QFileDialog, QHBoxLayout, QVBoxLayout, QSpinBox, QMessageBox,
-    QTabWidget,
+    QListWidget, QListWidgetItem, QFileDialog, QHBoxLayout, QVBoxLayout,
+    QSpinBox, QMessageBox, QTabWidget, QStackedWidget, QListView,
 )
 
 # キャプチャ画像の保存先（exe/スクリプトと同じ場所。書き込み不可なら一時フォルダ）
@@ -221,9 +221,22 @@ class MainWindow(QMainWindow):
         left_widget.setLayout(left)
         left_widget.setFixedWidth(280)
 
+        # 右側：単一画面（canvas）と複数画面（gallery）をスタックで切替える
+        self.gallery = QListWidget()
+        self.gallery.setViewMode(QListView.IconMode)
+        self.gallery.setIconSize(self.gallery.iconSize().scaled(160, 120, Qt.KeepAspectRatio))
+        self.gallery.setResizeMode(QListView.Adjust)
+        self.gallery.setMovement(QListView.Static)
+        self.gallery.setSpacing(8)
+        self.gallery.itemClicked.connect(self._on_gallery_click)
+
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self.canvas)   # index 0 = 単一画面
+        self.view_stack.addWidget(self.gallery)  # index 1 = 複数画面
+
         root = QHBoxLayout()
         root.addWidget(left_widget)
-        root.addWidget(self.canvas, stretch=1)
+        root.addWidget(self.view_stack, stretch=1)
 
         container = QWidget()
         container.setLayout(root)
@@ -282,6 +295,9 @@ class MainWindow(QMainWindow):
         btn_open_folder.clicked.connect(self.open_folder)
         btn_open_captures = QPushButton("撮影フォルダを開く")
         btn_open_captures.clicked.connect(self.open_capture_folder)
+        btn_view = QPushButton("表示切替 単一⇄複数（W）")
+        btn_view.setFocusPolicy(Qt.NoFocus)
+        btn_view.clicked.connect(self.toggle_view)
         btn_prev = QPushButton("← 前の画像（A）")
         btn_prev.clicked.connect(lambda: self.navigate(-1))
         btn_next = QPushButton("次の画像（D）→")
@@ -302,6 +318,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(btn_open_file)
         lay.addWidget(btn_open_folder)
         lay.addWidget(btn_open_captures)
+        lay.addWidget(btn_view)
         lay.addWidget(btn_prev)
         lay.addWidget(btn_next)
         lay.addWidget(QLabel("アノテーション一覧"))
@@ -328,6 +345,8 @@ class MainWindow(QMainWindow):
             self.navigate(-1)
         elif key == Qt.Key_D:
             self.navigate(1)
+        elif key == Qt.Key_W:
+            self.toggle_view()
 
     def open_file(self):
         """単一画像ファイルを開く"""
@@ -360,6 +379,38 @@ class MainWindow(QMainWindow):
         self.cur_index = max(0, min(len(self.image_files) - 1, self.cur_index + step))
         self._load_image(self.image_files[self.cur_index])
 
+    def toggle_view(self):
+        """単一画面と複数画面（サムネイル一覧）を切り替える"""
+        if self.view_stack.currentIndex() == 0:
+            if not self.image_files:
+                QMessageBox.information(self, "情報", "先に画像を読み込んでください")
+                return
+            self._populate_gallery()
+            self.view_stack.setCurrentIndex(1)
+            self.set_status("複数画面：サムネイルをクリックで単一表示 / Wで戻る")
+        else:
+            self.view_stack.setCurrentIndex(0)
+            self.set_status("単一画面：矩形描画 → Ctrl+Sで保存 / A:前 D:次 W:表示切替")
+
+    def _populate_gallery(self):
+        """読込中の画像をサムネイルとして一覧に並べる"""
+        self.gallery.clear()
+        for i, path in enumerate(self.image_files):
+            pix = QPixmap(path)
+            if pix.isNull():
+                continue
+            icon = QIcon(pix.scaled(160, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            item = QListWidgetItem(icon, os.path.basename(path))
+            item.setData(Qt.UserRole, i)
+            self.gallery.addItem(item)
+
+    def _on_gallery_click(self, item):
+        """サムネイルをクリックしたらその画像を単一画面で開く"""
+        idx = item.data(Qt.UserRole)
+        self.cur_index = idx
+        self._load_image(self.image_files[idx])
+        self.view_stack.setCurrentIndex(0)
+
     def _load_image(self, path):
         """画像を読み込み、既存ラベルがあれば一緒に復元する"""
         img = cv2.imread(path)
@@ -370,7 +421,7 @@ class MainWindow(QMainWindow):
         self.canvas.set_image(img)
         self._load_existing_label(path, img.shape[1], img.shape[0])
         self.refresh_list()
-        self.set_status(f"{os.path.basename(path)}  ({self.cur_index + 1}/{len(self.image_files)})  ←→で切替")
+        self.set_status(f"{os.path.basename(path)}  ({self.cur_index + 1}/{len(self.image_files)})  A:前 D:次 W:表示切替")
 
     def _load_existing_label(self, img_path, w, h):
         """同名の.txtがあればYOLO座標を読み込み矩形を復元する"""
