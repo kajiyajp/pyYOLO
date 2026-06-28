@@ -7,7 +7,7 @@ from ultralytics import YOLO
 model = YOLO("yolo11n.pt")
 
 results = model.train(
-    data="dataset_real.yaml",
+    data="configs/dataset_real.yaml",
     epochs=80,
     imgsz=640,
     batch=8,
