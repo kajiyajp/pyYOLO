@@ -272,16 +272,18 @@ class Canvas(QWidget):
         target = QRect(int(self._off_x), int(self._off_y), int(w * self._scale), int(h * self._scale))
         painter.drawImage(target, qimg)
 
-        # 保存済み矩形を描画
-        for cls_id, x1, y1, x2, y2 in self.boxes:
-            self._draw_box(painter, cls_id, x1, y1, x2, y2)
+        # アノテーション系（矩形・頂点）はライブ映像中は描かない
+        if not self.live:
+            # 保存済み矩形を描画
+            for cls_id, x1, y1, x2, y2 in self.boxes:
+                self._draw_box(painter, cls_id, x1, y1, x2, y2)
 
-        # 各矩形のキーポイント（L字頂点）を十字で描画する
-        for i, kpt in enumerate(self.keypoints):
-            if kpt is None:
-                continue
-            cls_id = self.boxes[i][0] if i < len(self.boxes) else 0
-            self._draw_keypoint(painter, kpt[0], kpt[1], cls_id)
+            # 各矩形のキーポイント（L字頂点）を十字で描画する
+            for i, kpt in enumerate(self.keypoints):
+                if kpt is None:
+                    continue
+                cls_id = self.boxes[i][0] if i < len(self.boxes) else 0
+                self._draw_keypoint(painter, kpt[0], kpt[1], cls_id)
 
         # ドラッグ中の矩形を描画
         if self.drawing:
@@ -308,7 +310,7 @@ class Canvas(QWidget):
 
         # キーポイントモード中はカーソル位置にガイド十字線を引く（頂点を正確に狙う）
         # guide_angle で回転できるので、傾いたL字の2辺に重ねて交点を狙える
-        if self.kpt_mode and self.hover_pt is not None:
+        if self.kpt_mode and not self.live and self.hover_pt is not None:
             disp_w, disp_h = w * self._scale, h * self._scale
             img_rect = QRect(int(self._off_x), int(self._off_y), int(disp_w), int(disp_h))
             hx, hy = self.hover_pt.x(), self.hover_pt.y()
@@ -337,8 +339,8 @@ class Canvas(QWidget):
             painter.setPen(QColor(0, 255, 0))
             painter.drawText(x + pad, y + th - 2, self.overlay_text)
 
-        # キーポイントモード中は左上に小さく表示する（ズーム率・ガイド角も併記）
-        if self.kpt_mode and self.image is not None:
+        # キーポイントモード中は左上に小さく表示する（ライブ中は出さない）
+        if self.kpt_mode and not self.live and self.image is not None:
             painter.setFont(QFont("Meiryo", 11, QFont.Bold))
             painter.setPen(QColor(255, 0, 255))
             label = "KEYPOINT MODE (K)"
