@@ -108,6 +108,10 @@ class Canvas(QWidget):
         self._off_x = 0.0            # 表示時の左オフセット（float）
         self._off_y = 0.0            # 表示時の上オフセット（float）
         self.live = False            # カメラ起動中フラグ（緑グロー枠の表示用）
+        # 表示モード: タブごとに「何を描くか」を決める（live機能フラグとは独立）
+        #   "annotate"=アノテ系一式 / "camera"=ライブ+グロー /
+        #   "inference"=ライブ+検出枠+グロー / "blank"=何も描かない
+        self.display_mode = "annotate"
         self.overlay_text = ""       # 画像右上に出す番号オーバーレイ（例 "13/20"）
         self.detections = []         # 推論結果の表示用 [dict(x1,y1,x2,y2,conf,cls)]
         # --- キーポイントモード（YOLO Pose用：L字頂点を矩形ごとに1点指定）---
@@ -256,9 +260,30 @@ class Canvas(QWidget):
         return int(x), int(y)
 
     def paintEvent(self, event):
-        """画像と全矩形・描画中の矩形を描画する"""
+        """表示モードに応じて画像・オーバーレイ・検出枠を描き分ける"""
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(40, 40, 40))
+        mode = getattr(self, "display_mode", "annotate")
+
+        # blank（学習・変換タブ）は灰背景＋案内のみ。画像もオーバーレイも描かない
+        if mode == "blank":
+            painter.setPen(QColor(120, 120, 120))
+            painter.drawText(self.rect(), Qt.AlignCenter, "学習・変換タブ（プレビューなし）")
+            return
+
+        # camera は live時のみライブ映像。未起動は残像を見せず案内文
+        if mode == "camera" and not self.live:
+            painter.setPen(QColor(200, 200, 200))
+            painter.drawText(self.rect(), Qt.AlignCenter, "カメラ開始を押してください")
+            return
+        # inference は カメラ推論(live) か 静止画推論(detections有) のとき描画
+        if mode == "inference" and not self.live and not self.detections:
+            painter.setPen(QColor(200, 200, 200))
+            painter.drawText(self.rect(), Qt.AlignCenter,
+                             "モデル読込後にカメラで推論 or 表示中画像で推論")
+            return
+
+        # annotate で画像が無いときは案内文
         if self.image is None:
             painter.setPen(QColor(200, 200, 200))
             painter.drawText(self.rect(), Qt.AlignCenter, "画像またはカメラを読み込んでください")
@@ -272,34 +297,30 @@ class Canvas(QWidget):
         target = QRect(int(self._off_x), int(self._off_y), int(w * self._scale), int(h * self._scale))
         painter.drawImage(target, qimg)
 
-        # アノテーション系（矩形・頂点）はライブ映像中は描かない
-        if not self.live:
-            # 保存済み矩形を描画
+        is_annotate = (mode == "annotate")
+
+        # --- アノテーション系（矩形・頂点・ドラッグ枠）は annotate のみ ---
+        if is_annotate:
             for cls_id, x1, y1, x2, y2 in self.boxes:
                 self._draw_box(painter, cls_id, x1, y1, x2, y2)
-
-            # 各矩形のキーポイント（L字頂点）を十字で描画する
             for i, kpt in enumerate(self.keypoints):
                 if kpt is None:
                     continue
                 cls_id = self.boxes[i][0] if i < len(self.boxes) else 0
                 self._draw_keypoint(painter, kpt[0], kpt[1], cls_id)
+            if self.drawing:
+                painter.setPen(QPen(class_color(self.current_class), 2, Qt.DashLine))
+                painter.drawRect(QRect(self.start_pt, self.cur_pt))
 
-        # ドラッグ中の矩形を描画
-        if self.drawing:
-            pen = QPen(class_color(self.current_class), 2, Qt.DashLine)
-            painter.setPen(pen)
-            painter.drawRect(QRect(self.start_pt, self.cur_pt))
-
-        # カメラ起動中はウィンドウ枠を蛍光緑でグロー表示する
-        if self.live:
+        # --- 緑グロー：camera / inference（live時のみ）---
+        if mode in ("camera", "inference") and self.live:
             for width, alpha in [(14, 35), (10, 70), (6, 130), (2, 230)]:
                 painter.setPen(QPen(QColor(0, 255, 0, alpha), width))
                 m = width // 2
                 painter.drawRect(self.rect().adjusted(m, m, -m, -m))
 
-        # 推論結果（検出ボックス）を黄色で描画する
-        if self.detections:
+        # --- 検出枠（黄）：inference のみ ---
+        if mode == "inference" and self.detections:
             painter.setFont(QFont("Meiryo", 10, QFont.Bold))
             for d in self.detections:
                 wx1, wy1 = self._img_to_widget(d["x1"], d["y1"])
@@ -308,9 +329,12 @@ class Canvas(QWidget):
                 painter.drawRect(QRect(QPoint(wx1, wy1), QPoint(wx2, wy2)))
                 painter.drawText(wx1, wy1 - 4, f"{class_name(d['cls'])} {d['conf']:.2f}")
 
-        # キーポイントモード中はカーソル位置にガイド十字線を引く（頂点を正確に狙う）
-        # guide_angle で回転できるので、傾いたL字の2辺に重ねて交点を狙える
-        if self.kpt_mode and not self.live and self.hover_pt is not None:
+        # 以降のガイド線・番号・KPTラベルは annotate 専用
+        if not is_annotate:
+            return
+
+        # キーポイントモード中はカーソル位置に回転可能なガイド十字線を引く
+        if self.kpt_mode and self.hover_pt is not None:
             disp_w, disp_h = w * self._scale, h * self._scale
             img_rect = QRect(int(self._off_x), int(self._off_y), int(disp_w), int(disp_h))
             hx, hy = self.hover_pt.x(), self.hover_pt.y()
@@ -326,7 +350,7 @@ class Canvas(QWidget):
                 painter.restore()
 
         # 単一画面の右上に画像番号をオーバーレイ表示する
-        if self.overlay_text and not self.live:
+        if self.overlay_text:
             painter.setFont(QFont("Meiryo", 14, QFont.Bold))
             fm = painter.fontMetrics()
             tw = fm.horizontalAdvance(self.overlay_text)
@@ -339,8 +363,8 @@ class Canvas(QWidget):
             painter.setPen(QColor(0, 255, 0))
             painter.drawText(x + pad, y + th - 2, self.overlay_text)
 
-        # キーポイントモード中は左上に小さく表示する（ライブ中は出さない）
-        if self.kpt_mode and not self.live and self.image is not None:
+        # キーポイントモード中は左上に小さく表示する
+        if self.kpt_mode:
             painter.setFont(QFont("Meiryo", 11, QFont.Bold))
             painter.setPen(QColor(255, 0, 255))
             label = "KEYPOINT MODE (K)"
@@ -614,19 +638,46 @@ class MainWindow(QMainWindow):
         self.status_label.setText(msg)
 
     def _on_tab_changed(self, index):
-        """タブ切替時にガイド表示とクラスボタンの有効/無効を切り替える"""
+        """タブ切替時に表示モードと stale 状態を設定し、ガイド/ボタンを更新する"""
         # タブを離れたらライブ（カメラ/推論）を止める（残像・検出枠の残りを防ぐ）
         if index != 0:
             self._stop_camera()
         if index != 3:
             self._stop_inference()
+
+        # 表示モードをタブに対応づける（paintはこのモードで分岐する）
+        self.canvas.display_mode = {0: "camera", 1: "annotate", 2: "blank", 3: "inference"}.get(index, "blank")
+
+        # アノテタブ以外では右側を単一画面に固定（gallery が裏に残るのを防ぐ）
+        if index != 1:
+            self.view_stack.setCurrentIndex(0)
+        # 推論タブ以外では検出枠を内部的にもクリア
+        if index != 3:
+            self.canvas.detections = []
+        # アノテタブ以外ではキーポイント/操作モードの stale をリセット
+        if index != 1:
+            self.canvas.kpt_mode = False
+            self.canvas.hover_pt = None
+            self.canvas.guide_angle = 0.0
+            self.canvas.drawing = False
+
         # アノテーションタブに来たら、ライブ残像でなく現在の静止画を再表示する
-        if index == 1 and self.image_files and 0 <= self.cur_index < len(self.image_files):
-            self._load_image(self.image_files[self.cur_index])
+        if index == 1:
+            if self.image_files and 0 <= self.cur_index < len(self.image_files):
+                self._load_image(self.image_files[self.cur_index])
+            else:
+                # 残フレーム・古い画像が残らないよう案内文へ戻す
+                self.canvas.image = None
+                self.canvas.boxes = []
+                self.canvas.keypoints = []
+                self.canvas.overlay_text = ""
+
         # クラスボタンはアノテーションタブ(index 1)でのみ有効
         if hasattr(self, "class_buttons"):
             for b in self.class_buttons:
                 b.setEnabled(index == 1)
+
+        self.canvas.update()  # モード変更を即時反映
         guides = {
             0: "カメラ撮影：カメラ開始 → Spaceで連続撮影 / Ctrl+Cで停止",
             1: "アノテーション：撮影フォルダを開く → 矩形描画 → Sで保存 / A:前 D:次",
@@ -955,6 +1006,7 @@ class MainWindow(QMainWindow):
         self.detector.conf = self.conf_spin.value() / 100.0
         self.canvas.overlay_text = ""
         self.canvas.reset_view()
+        self.canvas.display_mode = "inference"   # 推論モードを明示
         self.canvas.set_live(True)
         self.view_stack.setCurrentIndex(0)
         self.infer_timer.start(50)  # 約20fps（推論は重いので控えめ）
@@ -992,6 +1044,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "情報", "推論する画像がありません")
             return
         self.detector.conf = self.conf_spin.value() / 100.0
+        self.canvas.detections = []                 # 前回の検出枠をクリア
+        self.canvas.display_mode = "inference"      # 静止画推論でも検出枠を出す
         self.canvas.detections = self.detector.detect(self.canvas.image)
         self.canvas.update()
         self.set_status(f"推論結果：検出 {len(self.canvas.detections)} 個")
@@ -1018,11 +1072,14 @@ class MainWindow(QMainWindow):
         elif key == Qt.Key_W:
             self.toggle_view()
         elif key == Qt.Key_K:
-            self.toggle_kpt_mode()  # キーポイント指定モードのON/OFF
+            if self.tabs.currentIndex() == 1:   # キーポイント操作はアノテタブのみ
+                self.toggle_kpt_mode()
         elif key == Qt.Key_Q:
-            self.canvas.rotate_guide(-0.5 if shift else -1)  # 反時計回り(CCW)。Shiftで微調整
+            if self.tabs.currentIndex() == 1:
+                self.canvas.rotate_guide(-0.5 if shift else -1)  # CCW。Shiftで微調整
         elif key == Qt.Key_E:
-            self.canvas.rotate_guide(0.5 if shift else 1)    # 時計回り(CW)。Shiftで微調整
+            if self.tabs.currentIndex() == 1:
+                self.canvas.rotate_guide(0.5 if shift else 1)    # CW。Shiftで微調整
 
     def toggle_kpt_mode(self):
         """キーポイント指定モード（L字頂点を矩形内に1点クリック）のON/OFFを切り替える"""
@@ -1203,6 +1260,8 @@ class MainWindow(QMainWindow):
         self.timer.start(30)  # 約33fpsで更新
         self.canvas.overlay_text = ""  # ライブ中は番号を消す
         self.canvas.reset_view()       # ライブはズーム解除
+        self.canvas.display_mode = "camera"   # 撮影タブのカメラ起動＝cameraモード
+        self.view_stack.setCurrentIndex(0)    # gallery表示中でもライブを前面に
         self.canvas.set_live(True)  # 緑グロー枠ON
         self.set_status(f"カメラ {idx} 起動中：Spaceで撮影 / Ctrl+Cで停止")
 
