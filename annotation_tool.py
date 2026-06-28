@@ -63,6 +63,12 @@ class Canvas(QWidget):
         self._scale = 1.0            # 表示倍率
         self._off_x = 0              # 表示時の左オフセット
         self._off_y = 0              # 表示時の上オフセット
+        self.live = False            # カメラ起動中フラグ（緑グロー枠の表示用）
+
+    def set_live(self, flag):
+        """カメラ起動中フラグを切り替えて再描画する"""
+        self.live = flag
+        self.update()
 
     def set_image(self, bgr):
         """新しい画像をセットして再描画する"""
@@ -130,6 +136,13 @@ class Canvas(QWidget):
             pen = QPen(CLASS_COLORS[self.current_class], 2, Qt.DashLine)
             painter.setPen(pen)
             painter.drawRect(QRect(self.start_pt, self.cur_pt))
+
+        # カメラ起動中はウィンドウ枠を蛍光緑でグロー表示する
+        if self.live:
+            for width, alpha in [(14, 35), (10, 70), (6, 130), (2, 230)]:
+                painter.setPen(QPen(QColor(0, 255, 0, alpha), width))
+                m = width // 2
+                painter.drawRect(self.rect().adjusted(m, m, -m, -m))
 
     def _draw_box(self, painter, cls_id, x1, y1, x2, y2):
         """1つの矩形とクラス名ラベルを描画する"""
@@ -227,6 +240,9 @@ class MainWindow(QMainWindow):
         btn_cam.clicked.connect(self.toggle_camera)
         btn_capture = QPushButton("キャプチャ（Space）")
         btn_capture.clicked.connect(self.capture_frame)
+        # Spaceキーがボタンに吸われないようフォーカスを無効化（必ずkeyPressEventへ）
+        btn_cam.setFocusPolicy(Qt.NoFocus)
+        btn_capture.setFocusPolicy(Qt.NoFocus)
 
         lay = QVBoxLayout()
         lay.addWidget(QLabel("カメラ番号"))
@@ -367,6 +383,7 @@ class MainWindow(QMainWindow):
             self.cap = None
             return
         self.timer.start(30)  # 約33fpsで更新
+        self.canvas.set_live(True)  # 緑グロー枠ON
         self.status.setText(f"カメラ {idx} 起動中")
 
     def _stop_camera(self):
@@ -375,6 +392,7 @@ class MainWindow(QMainWindow):
             self.timer.stop()
             self.cap.release()
             self.cap = None
+        self.canvas.set_live(False)  # 緑グロー枠OFF
 
     def _update_camera(self):
         """カメラから1フレーム取得して表示する（矩形は保持しない）"""
