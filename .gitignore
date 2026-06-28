@@ -28,3 +28,6 @@ dataset/labels/*.cache
 
 # OBB用の派生データセット（convert_to_obb.pyで再生成可）
 dataset_obb/
+
+# 実機撮影の派生データセット（prepare_real_dataset.pyで再生成可）
+dataset_real/
