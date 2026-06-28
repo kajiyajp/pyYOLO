@@ -208,17 +208,15 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         """ウィジェットを配置してUIを組み立てる（左パネルはタブ構成）"""
         self.canvas = Canvas()
-        self.status = QLabel("準備完了")
-        self.status.setWordWrap(True)
 
         # タブで「カメラ撮影」と「アノテーション」を分ける
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_camera_tab(), "カメラ撮影")
         self.tabs.addTab(self._build_annotation_tab(), "アノテーション")
+        self.tabs.currentChanged.connect(self._on_tab_changed)  # タブ切替で案内を更新
 
         left = QVBoxLayout()
         left.addWidget(self.tabs)
-        left.addWidget(self.status)
         left_widget = QWidget()
         left_widget.setLayout(left)
         left_widget.setFixedWidth(280)
@@ -230,6 +228,21 @@ class MainWindow(QMainWindow):
         container = QWidget()
         container.setLayout(root)
         self.setCentralWidget(container)
+
+        # 画面下部のステータスバー
+        self.statusBar().showMessage("準備完了")
+        self._on_tab_changed(0)
+
+    def set_status(self, msg):
+        """ステータスバーにメッセージを表示する"""
+        self.statusBar().showMessage(msg)
+
+    def _on_tab_changed(self, index):
+        """タブ切替時にそのタブ向けの操作ガイドを表示する"""
+        if index == 0:
+            self.set_status("カメラ撮影：カメラ開始 → Spaceで連続撮影 / Ctrl+Cで停止")
+        else:
+            self.set_status("アノテーション：撮影フォルダを開く → 矩形描画 → Ctrl+Sで保存 / ←→で画像切替")
 
     def _build_camera_tab(self):
         """タブ①：カメラ撮影パネルを組み立てる"""
@@ -298,11 +311,20 @@ class MainWindow(QMainWindow):
         return w
 
     def keyPressEvent(self, event):
-        """ショートカット：Spaceでキャプチャ、Ctrl+Sで保存"""
-        if event.key() == Qt.Key_Space:
+        """ショートカット：Space撮影 / Ctrl+C停止 / Ctrl+S保存 / ←→画像切替"""
+        key = event.key()
+        ctrl = event.modifiers() == Qt.ControlModifier
+        if key == Qt.Key_Space:
             self.capture_frame()
-        elif event.key() == Qt.Key_S and event.modifiers() == Qt.ControlModifier:
+        elif key == Qt.Key_C and ctrl:
+            self._stop_camera()
+            self.set_status("カメラを停止しました")
+        elif key == Qt.Key_S and ctrl:
             self.save_label()
+        elif key == Qt.Key_Left:
+            self.navigate(-1)
+        elif key == Qt.Key_Right:
+            self.navigate(1)
 
     def open_file(self):
         """単一画像ファイルを開く"""
@@ -345,7 +367,7 @@ class MainWindow(QMainWindow):
         self.canvas.set_image(img)
         self._load_existing_label(path, img.shape[1], img.shape[0])
         self.refresh_list()
-        self.status.setText(f"{os.path.basename(path)}  ({self.cur_index + 1}/{len(self.image_files)})")
+        self.set_status(f"{os.path.basename(path)}  ({self.cur_index + 1}/{len(self.image_files)})  ←→で切替")
 
     def _load_existing_label(self, img_path, w, h):
         """同名の.txtがあればYOLO座標を読み込み矩形を復元する"""
@@ -384,7 +406,7 @@ class MainWindow(QMainWindow):
             return
         self.timer.start(30)  # 約33fpsで更新
         self.canvas.set_live(True)  # 緑グロー枠ON
-        self.status.setText(f"カメラ {idx} 起動中")
+        self.set_status(f"カメラ {idx} 起動中：Spaceで撮影 / Ctrl+Cで停止")
 
     def _stop_camera(self):
         """カメラを停止して解放する"""
@@ -414,9 +436,9 @@ class MainWindow(QMainWindow):
             n = len(glob.glob(os.path.join(CAPTURE_DIR, "cap_*.jpg")))
             path = os.path.join(CAPTURE_DIR, f"cap_{n:03d}.jpg")
             cv2.imwrite(path, frozen)
-            self.status.setText(f"撮影 {n + 1} 枚目を保存: {path}")
+            self.set_status(f"撮影 {n + 1} 枚目を保存: {path}")
         except Exception as e:
-            self.status.setText(f"保存失敗: {e}")
+            self.set_status(f"保存失敗: {e}")
 
     def open_capture_folder(self):
         """撮影フォルダ(captures)を開いてアノテーション対象にする"""
@@ -457,7 +479,7 @@ class MainWindow(QMainWindow):
                 bw = abs(x2 - x1) / w
                 bh = abs(y2 - y1) / h
                 f.write(f"{cls_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
-        self.status.setText(f"保存完了: {label_path}（{len(self.canvas.boxes)}件）")
+        self.set_status(f"保存完了: {label_path}（{len(self.canvas.boxes)}件）")
 
     def closeEvent(self, event):
         """ウィンドウを閉じる前にカメラを解放する"""
