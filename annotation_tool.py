@@ -5,15 +5,18 @@
 import os
 import sys
 import glob
+import json
 
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QSize
 from PySide6.QtGui import QImage, QPainter, QPen, QColor, QFont, QPixmap, QIcon
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QComboBox,
+    QApplication, QMainWindow, QWidget, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFileDialog, QHBoxLayout, QVBoxLayout,
     QSpinBox, QMessageBox, QTabWidget, QStackedWidget, QListView,
+    QButtonGroup, QGraphicsDropShadowEffect, QDialog, QPlainTextEdit,
+    QDialogButtonBox,
 )
 
 # キャプチャ画像の保存先（exe/スクリプトと同じ場所。書き込み不可なら一時フォルダ）
@@ -37,15 +40,46 @@ def _capture_dir():
 
 CAPTURE_DIR = _capture_dir()
 
-# 対象クラス定義（class_id順）
-CLASSES = ["l_mark", "cross", "circle_cross", "l_mark_black"]
-# クラスごとの描画色（BGRではなくRGB）
-CLASS_COLORS = [
-    QColor(0, 255, 0),     # l_mark = 緑
-    QColor(0, 180, 255),   # cross = 水色
-    QColor(255, 180, 0),   # circle_cross = オレンジ
-    QColor(255, 0, 180),   # l_mark_black = ピンク
+# クラス定義の保存先（exe/スクリプトと同じ場所のclasses.json）
+def _base_dir():
+    """exe/スクリプトの配置ディレクトリを返す"""
+    return os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_PATH = os.path.join(_base_dir(), "classes.json")
+DEFAULT_CLASSES = ["l_mark", "cross", "circle_cross", "l_mark_black"]
+
+def load_classes():
+    """classes.jsonからクラス名一覧を読み込む（無ければ既定値）"""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list) and data:
+            return [str(x) for x in data]
+    except Exception:
+        pass
+    return list(DEFAULT_CLASSES)
+
+def save_classes(classes):
+    """クラス名一覧をclasses.jsonに保存する"""
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(classes, f, ensure_ascii=False, indent=2)
+
+# 対象クラス（実行時に編集可能。class_id = リストの並び順）
+CLASSES = load_classes()
+
+# クラス描画色のパレット（クラス数より多めに用意し、足りなければ循環）
+PALETTE = [
+    QColor(0, 255, 0), QColor(0, 180, 255), QColor(255, 180, 0), QColor(255, 0, 180),
+    QColor(255, 255, 0), QColor(0, 255, 255), QColor(255, 80, 80), QColor(160, 120, 255),
 ]
+
+def class_color(i):
+    """クラスIDに対応する描画色を返す（パレットを循環）"""
+    return PALETTE[i % len(PALETTE)]
+
+def class_name(i):
+    """クラスIDに対応する名前を返す（範囲外は仮名）"""
+    return CLASSES[i] if 0 <= i < len(CLASSES) else f"id{i}"
 
 
 class Canvas(QWidget):
@@ -134,7 +168,7 @@ class Canvas(QWidget):
 
         # ドラッグ中の矩形を描画
         if self.drawing:
-            pen = QPen(CLASS_COLORS[self.current_class], 2, Qt.DashLine)
+            pen = QPen(class_color(self.current_class), 2, Qt.DashLine)
             painter.setPen(pen)
             painter.drawRect(QRect(self.start_pt, self.cur_pt))
 
@@ -161,7 +195,7 @@ class Canvas(QWidget):
 
     def _draw_box(self, painter, cls_id, x1, y1, x2, y2):
         """1つの矩形とクラス名ラベルを描画する"""
-        color = CLASS_COLORS[cls_id]
+        color = class_color(cls_id)
         wx1 = int(x1 * self._scale) + self._off_x
         wy1 = int(y1 * self._scale) + self._off_y
         wx2 = int(x2 * self._scale) + self._off_x
@@ -169,7 +203,7 @@ class Canvas(QWidget):
         painter.setPen(QPen(color, 2))
         painter.drawRect(QRect(QPoint(wx1, wy1), QPoint(wx2, wy2)))
         painter.setFont(QFont("Meiryo", 9))
-        painter.drawText(wx1, wy1 - 4, CLASSES[cls_id])
+        painter.drawText(wx1, wy1 - 4, class_name(cls_id))
 
     def mousePressEvent(self, event):
         """ドラッグ開始：矩形の始点を記録する"""
@@ -203,6 +237,28 @@ class Canvas(QWidget):
         win = self.window()
         if hasattr(win, "refresh_list"):
             win.refresh_list()
+
+
+class ClassSettingsDialog(QDialog):
+    """クラス名を1行1クラスで編集する設定ダイアログ"""
+
+    def __init__(self, classes, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("クラス設定")
+        self.resize(360, 320)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("1行に1クラス（上から class_id 0,1,2…）\n※ 注釈後に順番/個数を変えるとIDがずれます"))
+        self.editor = QPlainTextEdit("\n".join(classes))
+        lay.addWidget(self.editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def get_classes(self):
+        """入力テキストから空行を除いたクラス名一覧を返す"""
+        lines = [ln.strip() for ln in self.editor.toPlainText().splitlines()]
+        return [ln for ln in lines if ln]
 
 
 class MainWindow(QMainWindow):
@@ -249,19 +305,100 @@ class MainWindow(QMainWindow):
         self.view_stack.addWidget(self.canvas)   # index 0 = 単一画面
         self.view_stack.addWidget(self.gallery)  # index 1 = 複数画面
 
+        # 右側上部：クラス選択のトグルボタン列 + その下に表示スタック
+        self.class_bar = QHBoxLayout()
+        self.class_bar.setContentsMargins(4, 4, 4, 4)
+        self.class_bar.setSpacing(6)
+        class_bar_widget = QWidget()
+        class_bar_widget.setLayout(self.class_bar)
+
+        right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        right.addWidget(class_bar_widget)
+        right.addWidget(self.view_stack, stretch=1)
+        right_widget = QWidget()
+        right_widget.setLayout(right)
+
         root = QHBoxLayout()
         root.addWidget(left_widget)
-        root.addWidget(self.view_stack, stretch=1)
+        root.addWidget(right_widget, stretch=1)
 
         container = QWidget()
         container.setLayout(root)
         self.setCentralWidget(container)
+
+        # メニュー：設定 > クラス設定
+        menu = self.menuBar().addMenu("設定")
+        act = menu.addAction("クラス設定…")
+        act.triggered.connect(self.open_class_settings)
+
+        # クラスボタンを構築（F1〜のショートカット付き）
+        self.class_buttons = []
+        self.class_group = QButtonGroup(self)
+        self.class_group.setExclusive(True)
+        self._rebuild_class_bar()
 
         # 画面下部のステータスバー（QLabelを埋め込み左端の見切れを防ぐ）
         self.status_label = QLabel("準備完了")
         self.status_label.setContentsMargins(8, 0, 8, 0)
         self.statusBar().addWidget(self.status_label, 1)
         self._on_tab_changed(0)
+
+    def _rebuild_class_bar(self):
+        """クラス選択ボタン列を作り直す（クラス設定変更時にも呼ぶ）"""
+        # 既存ボタンを除去
+        for b in self.class_buttons:
+            self.class_group.removeButton(b)
+            b.setParent(None)
+        self.class_buttons = []
+        # クラスごとにトグルボタンを生成（F1〜F12対応）
+        for i, name in enumerate(CLASSES):
+            label = f"F{i + 1}: {name}" if i < 12 else name
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.clicked.connect(lambda _=False, idx=i: self.select_class(idx))
+            self.class_group.addButton(btn, i)
+            self.class_bar.addWidget(btn)
+            self.class_buttons.append(btn)
+        self.class_bar.addStretch(1)
+        # 現在クラスを範囲内に収めて選択
+        cur = min(self.canvas.current_class, len(CLASSES) - 1) if CLASSES else 0
+        if self.class_buttons:
+            self.select_class(cur)
+
+    def select_class(self, idx):
+        """クラスを選択し、アクティブボタンを緑グローで強調する"""
+        if not (0 <= idx < len(self.class_buttons)):
+            return
+        self.canvas.set_class(idx)
+        for i, b in enumerate(self.class_buttons):
+            active = (i == idx)
+            b.setChecked(active)
+            if active:
+                # 蛍光緑のグロー効果
+                glow = QGraphicsDropShadowEffect(b)
+                glow.setBlurRadius(22)
+                glow.setColor(QColor(57, 255, 20))
+                glow.setOffset(0, 0)
+                b.setGraphicsEffect(glow)
+                b.setStyleSheet("QPushButton{border:2px solid #39ff14; color:#39ff14; font-weight:bold;}")
+            else:
+                b.setGraphicsEffect(None)
+                b.setStyleSheet("")
+
+    def open_class_settings(self):
+        """クラス設定ダイアログを開いて名前一覧を編集する"""
+        dlg = ClassSettingsDialog(CLASSES, self)
+        if dlg.exec() == QDialog.Accepted:
+            new_classes = dlg.get_classes()
+            if not new_classes:
+                QMessageBox.warning(self, "警告", "クラスを1つ以上指定してください")
+                return
+            CLASSES[:] = new_classes  # グローバルを更新
+            save_classes(CLASSES)
+            self._rebuild_class_bar()
+            self.set_status(f"クラスを更新しました（{len(CLASSES)}件）")
 
     def set_status(self, msg):
         """ステータスバーにメッセージを表示する"""
@@ -299,11 +436,7 @@ class MainWindow(QMainWindow):
         return w
 
     def _build_annotation_tab(self):
-        """タブ②：アノテーションパネルを組み立てる"""
-        self.class_combo = QComboBox()
-        self.class_combo.addItems(CLASSES)
-        self.class_combo.currentIndexChanged.connect(self.canvas.set_class)
-
+        """タブ②：アノテーションパネルを組み立てる（クラス選択は上部ボタン列）"""
         btn_open_file = QPushButton("画像を開く")
         btn_open_file.clicked.connect(self.open_file)
         btn_open_folder = QPushButton("フォルダを開く")
@@ -328,8 +461,7 @@ class MainWindow(QMainWindow):
         self.box_list.setFocusPolicy(Qt.NoFocus)  # A/Dキーがリストに吸われないように
 
         lay = QVBoxLayout()
-        lay.addWidget(QLabel("クラス選択"))
-        lay.addWidget(self.class_combo)
+        lay.addWidget(QLabel("クラスは画面上部のボタンで選択（F1〜）"))
         lay.addWidget(btn_open_file)
         lay.addWidget(btn_open_folder)
         lay.addWidget(btn_open_captures)
@@ -346,9 +478,13 @@ class MainWindow(QMainWindow):
         return w
 
     def keyPressEvent(self, event):
-        """ショートカット：Space撮影 / Ctrl+C停止 / Ctrl+S保存 / ←→画像切替"""
+        """ショートカット：Space撮影 / Ctrl+C停止 / Ctrl+S保存 / A,D画像 / W表示 / F1〜クラス"""
         key = event.key()
         ctrl = event.modifiers() == Qt.ControlModifier
+        # F1〜F12でクラス選択
+        if Qt.Key_F1 <= key <= Qt.Key_F12:
+            self.select_class(key - Qt.Key_F1)
+            return
         if key == Qt.Key_Space:
             self.capture_frame()
         elif key == Qt.Key_C and ctrl:
@@ -436,7 +572,7 @@ class MainWindow(QMainWindow):
                     cx, cy, bw, bh = map(float, p[1:])
                     x1, y1 = int((cx - bw / 2) * w), int((cy - bh / 2) * h)
                     x2, y2 = int((cx + bw / 2) * w), int((cy + bh / 2) * h)
-                    c = CLASS_COLORS[cls]
+                    c = class_color(cls)
                     cv2.rectangle(img, (x1, y1), (x2, y2), (c.blue(), c.green(), c.red()), 4)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
@@ -553,7 +689,7 @@ class MainWindow(QMainWindow):
         """アノテーション一覧の表示を最新化する"""
         self.box_list.clear()
         for cls_id, x1, y1, x2, y2 in self.canvas.boxes:
-            self.box_list.addItem(f"{CLASSES[cls_id]}  ({x1},{y1})-({x2},{y2})")
+            self.box_list.addItem(f"{class_name(cls_id)}  ({x1},{y1})-({x2},{y2})")
 
     def delete_selected(self):
         """一覧で選択中の矩形を削除する"""
